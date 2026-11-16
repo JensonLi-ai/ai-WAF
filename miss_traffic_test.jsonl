@@ -1,0 +1,4 @@
+{"time": "2026-11-09 13:45:00", "src_ip": "127.0.0.1", "method": "GET", "host": "demo.test", "raw_uri": "/?file=../../../../etc/passwd", "headers": {"Host": "demo.test", "User-Agent": "curl/7.81.0", "Accept": "*/*"}, "body": ""}
+{"time": "2026-11-09 13:45:01", "src_ip": "127.0.0.1", "method": "GET", "host": "demo.test", "raw_uri": "/?id=1%20AND%20sleep(5)", "headers": {"Host": "demo.test", "User-Agent": "curl/7.81.0", "Accept": "*/*"}, "body": ""}
+{"time": "2026-11-09 13:45:02", "src_ip": "127.0.0.1", "method": "GET", "host": "demo.test", "raw_uri": "/?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F", "headers": {"Host": "demo.test", "User-Agent": "curl/7.81.0", "Accept": "*/*"}, "body": ""}
+{"time": "2026-11-09 13:45:03", "src_ip": "127.0.0.1", "method": "GET", "host": "demo.test", "raw_uri": "/demo?v=hello%20world", "headers": {"Host": "demo.test", "User-Agent": "curl/7.81.0", "Accept": "*/*"}, "body": ""}

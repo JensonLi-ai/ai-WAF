@@ -1,0 +1,44 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 运行时数据（本地生成，勿提交） ----
+aiwaf/aiwaf.db
+aiwaf/aiwaf.db-journal
+aiwaf/miss_traffic.jsonl
+
+# ---- 雷池前端静态资源 dump（开发期探索产物，与项目无关） ----
+jsdump/
+
+# ---- 开发期探索 / 调试脚本 ----
+probe*.sh
+probe*.py
+aiwaf/probe_*.py
+aiwaf/bench.py
+aiwaf/fix_rules.py
+_rc_*.log
+_scan_disks.ps1
+jsextract.py
+llm_debug.py
+login.py
+test_login.py
+read_mgtdb.py
+netcheck.sh
+mgt.crt
+Qwen3-14B聊天.html
+aiwaf_attack_test.sh
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# ---- 发布物料（爱发电封面/文案/HTML 文稿，非项目源码） ----
+aiwaf-intro/
+afdian-*.jpg
+afdian-*.png
+afdian-intro.md
