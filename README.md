@@ -1,10 +1,32 @@
 # AI-WAF 智能 Web 应用防火墙
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
+[![LLM](https://img.shields.io/badge/LLM-Qwen3--14B-teal.svg)](https://github.com/QwenLM/Qwen3)
+[![WAF](https://img.shields.io/badge/WAF-SafeLine-green.svg)](https://waf.chaitin.cn/)
+[![Sponsor](https://img.shields.io/badge/Sponsor-爱发电-orange.svg)](https://ifdian.net/a/Jenson-li)
+
 一个把「本地大模型」接入开源 WAF 的**闭环防护系统**——不仅拦截已知攻击，还能**自动发现并补上规则没见过的变形攻击**。
 
 核心设计原则：**流量从采集、研判到拦截，全程不离开运行它的那台机器。**
 
 > ⚠️ 本项目仅供合法的授权安全测试与学习研究使用。请勿用于任何未授权的攻击行为。
+
+---
+
+## 📖 目录
+
+- [核心特性](#核心特性)
+- [架构](#架构)
+- [工作原理](#工作原理)
+- [检测能力](#检测能力)
+- [防误杀机制](#防误杀机制)
+- [规则生命周期](#规则生命周期)
+- [目录结构](#目录结构)
+- [环境要求](#环境要求)
+- [快速开始](#快速开始)
+- [技术栈](#技术栈)
+- [支持 / 赞助](#支持--赞助)
 
 ---
 
