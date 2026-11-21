@@ -28,6 +28,7 @@
 - [环境要求](#环境要求)
 - [项目就绪度](#项目就绪度)
 - [评测基准](#评测基准)
+- [运行模式](#运行模式)
 - [快速开始](#快速开始)
 - [技术栈](#技术栈)
 - [支持 / 赞助](#支持--赞助)
@@ -181,6 +182,25 @@ miss_traffic_test.jsonl  # 测试样本
 python -m aiwaf.benchmark              # 全量评测
 python -m aiwaf.benchmark --json out.json  # 结果落盘，便于历史对比
 ```
+
+## 运行模式
+
+用环境变量 `RUN_MODE` 控制 AI 规则下发策略（默认 `auto`）：
+
+| 模式 | 行为 |
+|---|---|
+| `auto` | 自动闭环：观察期达标后自动转正拦截 |
+| `human-review` | 观察期达标后转人工审批，面板点击「批准」才转正 |
+| `alert-only` | AI 只研判告警，不下发任何规则（最保守） |
+
+```bash
+# Linux
+RUN_MODE=human-review python -m aiwaf.main
+# Windows (cmd)
+set RUN_MODE=human-review && python -m aiwaf.main
+```
+
+> 生产初期建议从 `human-review` 或 `alert-only` 起步，验证 AI 规则质量后再切 `auto`。
 
 ## 快速开始
 
