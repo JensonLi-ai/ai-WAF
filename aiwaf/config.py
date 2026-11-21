@@ -35,7 +35,7 @@ ANALYZE_DELAY = int(os.environ.get("ANALYZE_DELAY", "5"))      # 事件拉回后
 MAINT_INTERVAL = int(os.environ.get("MAINT_INTERVAL", "3600")) # 规则生命周期维护周期(秒)
 
 # ---- 规则生命周期（用户确认的硬约束） ----
-OBSERVE_TTL_DAYS = 7                 # 观察期
+OBSERVE_TTL_HOURS = int(os.environ.get("OBSERVE_TTL_HOURS", "168"))  # 观察期(小时)，默认168=7天；演示/验证可调小(如1~24)
 PROMOTE_ZERO_HIT_DAYS = 14           # 转正后连续零命中回收天数
 MAX_RULES = 300                      # 自定义规则硬上限
 MIN_CONFIDENCE = 0.85                # 低于此置信度不生成规则

@@ -1,7 +1,7 @@
 """闭环引擎：轮询日志 -> 延迟研判 -> 高置信度变种生成观察期规则 -> 生命周期维护。
 
 规则生命周期（用户确认的硬约束）：
-- 观察期 OBSERVE_TTL_DAYS 天，独立统计命中
+- 观察期 OBSERVE_TTL_HOURS 小时，独立统计命中
 - 观察期到期且命中 >= PROMOTE_THRESHOLD_HITS 转正；到期未达标直接回收
 - 转正后连续 PROMOTE_ZERO_HIT_DAYS 天零命中自动回收
 - 转正后同类规则（同 host+uri 前缀）合并为复合正则
@@ -264,7 +264,7 @@ class Engine(threading.Thread):
         db.add_rule(
             name=name, regex=regex, site_id=site_id or host, host=host,
             uri_prefix=prefix,
-            observed_until=_iso(_now() + timedelta(days=config.OBSERVE_TTL_DAYS)),
+            observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
             safeline_policy_id=policy_id, confidence=a["confidence"])
         log("rule created: %s (policy_id=%s) prefix=%s conf=%.2f" %
             (name, policy_id, prefix, a["confidence"]))

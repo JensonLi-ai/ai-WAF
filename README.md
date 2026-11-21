@@ -134,9 +134,13 @@ aiwaf/
 ├── trace.py          # 链路追踪工具（单步观察拦截过程）
 ├── web.py            # Web 面板（无外部依赖的单页应用）
 ├── db.py             # SQLite 存储 + 规则生命周期数据层
+├── benchmark.py      # AI 研判层离线评测（检出/误报/规则质量）
 └── config.py         # 全局配置（环境变量可覆盖）
-start_*.bat           # 各组件启动脚本
-AI-WAF一键恢复.bat     # 一键拉起全部组件
+start_llm.bat          # 启动本地大模型 llama-server
+start_collector_wsl.sh # 启动旁路采集器（WSL 内）
+start_engine.bat       # 启动闭环引擎 + Web 面板
+start_keepalive.bat    # 进程保活
+AI-WAF一键恢复.bat      # 一键拉起全部组件
 verify_miss_loop.py   # 漏判闭环回归脚本
 miss_traffic_test.jsonl  # 测试样本
 ```
@@ -154,6 +158,10 @@ miss_traffic_test.jsonl  # 测试样本
 
 - 已跑通：漏判检测闭环、AI 规则自动生成、特指性校验、转正前正常流量回放（E2E 回归见 `verify_miss_loop.py`）
 - 进行中：真实流量压测、大规模 CVE 语料的基座模型领域微调、与商业 WAF 的横向检出率 / 误报率对比
+
+已知限制：
+- 存储为单文件 SQLite，引擎 / 采集器 / Web 面板多进程并发读写依赖 busy_timeout 串行化，适合原型与中小流量；高并发生产需换 Postgres。
+- 正常流量回放池靠粗筛过滤疑似攻击，仍存在极低概率被「粗筛与 LLM 均漏判」的变形攻击污染、进而延迟某条规则转正的可能，属已知边界（回放命中项 LLM 复核已列入后续计划）。
 
 > 本项目下一步目标：在更大算力上完成基座模型的领域微调与攻防对抗评测，达到生产级检出与误报指标后，再发布生产部署建议。
 
