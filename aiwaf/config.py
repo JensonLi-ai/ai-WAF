@@ -25,6 +25,7 @@ SSL_VERIFY = False                # 雷池自签证书，原型阶段不校验�
 LLM_BASE = os.environ.get("LLM_BASE", "http://127.0.0.1:1234")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-14b")
 LLM_TIMEOUT = 300
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))  # 输出上限：研判 JSON 足够，且防止 grammar 约束下生成失控
 LLM_TEMP = 0.1
 LLM_GRAMMAR = os.environ.get("LLM_GRAMMAR", "builtin")  # builtin=内置JSON grammar；空串=关闭；路径=自定义GBNF
 

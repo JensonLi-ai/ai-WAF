@@ -98,6 +98,21 @@ def _regex_specific_enough(regex):
     return False, "too-broad literals=%r" % sorted(words)[:5]
 
 
+def _fix_broken_regex(regex):
+    """模型输出的正则常见缺陷：以裸反斜杠结尾（JSON 转义没写对）。
+
+    安全修复：剥掉结尾连续反斜杠后重编译；仍不合法则返回 None。
+    """
+    fixed = re.sub(r"\\+$", "", regex)
+    if not fixed:
+        return None
+    try:
+        re.compile(fixed)
+        return fixed
+    except re.error:
+        return None
+
+
 def _parse_ts(s, default=None):
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
@@ -215,8 +230,13 @@ class Engine(threading.Thread):
         try:
             re.compile(regex)
         except re.error as e:
-            log("skip rule: invalid regex %r: %s" % (regex, e))
-            return
+            fixed = _fix_broken_regex(regex)
+            if fixed is None:
+                log("skip rule: invalid regex %r: %s" % (regex, e))
+                return
+            log("rule fixed: strip trailing backslash %r -> %r" %
+                (regex[:60], fixed[:60]))
+            regex = fixed
         sample = "%s %s" % (row.get("uri") or "", row.get("payload") or "")
         if sample.strip() and not re.search(regex, sample):
             log("skip rule: regex does not match triggering sample: %r" % regex[:60])

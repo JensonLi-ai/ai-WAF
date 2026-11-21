@@ -9,6 +9,7 @@ venv/
 aiwaf/aiwaf.db
 aiwaf/aiwaf.db-journal
 aiwaf/miss_traffic.jsonl
+bench_*.json
 
 # ---- 雷池前端静态资源 dump（开发期探索产物，与项目无关） ----
 jsdump/

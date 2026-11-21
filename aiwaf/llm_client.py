@@ -70,7 +70,22 @@ SYSTEM_PROMPT = """你是 WEB 应用防火墙（WAF）的 AI 研判引擎。分�
 
 例6（SSRF 云元数据）：
 输入：{"host":"demo.test","uri":"/?url=http://169.254.169.254/latest/meta-data/","payload":"http://169.254.169.254/latest/meta-data/"}
-输出：{"verdict":"attack","variant":"ssrf_metadata","confidence":0.95,"suggested_rule":"169\\.254\\.169\\.254|/latest/meta-data","explain":"访问云元数据地址，属 SSRF"}"""
+输出：{"verdict":"attack","variant":"ssrf_metadata","confidence":0.95,"suggested_rule":"169\\.254\\.169\\.254|/latest/meta-data","explain":"访问云元数据地址，属 SSRF"}
+
+容易误判的正常请求（必须判 benign，不要只看关键词）：
+例7（单独关键词搜索）：
+输入：{"host":"demo.test","uri":"/?q=sleep","payload":"sleep"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"单独的单词搜索，无函数调用或注入语法，属正常请求"}
+
+例8（站内登录跳转）：
+输入：{"host":"demo.test","uri":"/admin/login?redirect=/dashboard","payload":"redirect=/dashboard"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"站内登录跳转，redirect 指向站内路径，无 SSRF 构造"}
+
+例9（业务 JWT 参数）：
+输入：{"host":"demo.test","uri":"/?auth=eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.sig","payload":"auth=eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.sig"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"正常业务 JWT 认证参数，三段结构完整，无注入特征"}
+
+判断原则：关键词不等于攻击。只有看到能构成注入/执行的语法结构（引号闭合注入、管道符、模板表达式、DOCTYPE 实体、序列化头等）才判 attack；只有关键词但无语境判 benign；确实拿不准判 unknown。suggested_rule 必须是合法 Python re 正则，JSON 内反斜杠一律写成双反斜杠 \\\\，禁止以反斜杠结尾。"""
 
 
 # 模型想输出正则里的 \b（词边界）/ \f 等，但若在 JSON 字符串里只写单反斜杠，
@@ -121,6 +136,7 @@ class LlmClient:
             ],
             "temperature": config.LLM_TEMP,
             "stream": False,
+            "max_tokens": config.LLM_MAX_TOKENS,
         }
         if self.grammar:
             body["grammar"] = self.grammar
@@ -138,11 +154,17 @@ class LlmClient:
             raise LlmError("llm HTTP %s: %s" % (e.code, text[:300])) from e
         except urllib.error.URLError as e:
             raise LlmError("llm connect failed: %s" % e.reason) from e
+        except TimeoutError as e:
+            raise LlmError("llm timeout: %s" % e) from e
 
     @staticmethod
     def _parse_content(content):
-        """尽量解析出 JSON：直接 parse -> 去代码围栏 -> 截取首个 {...}"""
+        """尽量解析出 JSON：宽容转义 -> 直接 parse -> 去代码围栏 -> 截取首个 {...}"""
         text = (content or "").strip()
+        # 模型常把正则里的 \d \s 写成 JSON 单反斜杠（非法 JSON 转义），
+        # 导致整个 JSON 解析失败；先补成双反斜杠救回这批输出。
+        # 注意 (?<!\\) 约束：不能把合法转义对 \\ 的第二个反斜杠误判为非法。
+        text = re.sub(r'(?<!\\)\\(?!["\\/bfnrtu])', r"\\\\", text)
         try:
             return json.loads(text)
         except (ValueError, TypeError):
