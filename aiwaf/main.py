@@ -19,7 +19,7 @@ def main():
     llm = llm_client.LlmClient()
     eng = engine.Engine(safeline, llm)
     eng.start()
-    web.serve()
+    web.serve(engine=eng)
 
 
 if __name__ == "__main__":

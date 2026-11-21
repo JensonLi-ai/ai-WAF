@@ -217,6 +217,10 @@ class Engine(threading.Thread):
         if (a["verdict"] == "attack"
                 and a["confidence"] >= config.MIN_CONFIDENCE
                 and not a.get("_error")):
+            if config.RUN_MODE == "alert-only":
+                log("alert (no rule): [%s] %s conf=%.2f" %
+                    (short, a["explain"][:40], a["confidence"]))
+                return
             row2 = dict(row)
             row2["payload"] = ev.get("payload") or row.get("payload") or ""
             self._maybe_create_rule(row2, a)
@@ -265,7 +269,8 @@ class Engine(threading.Thread):
             name=name, regex=regex, site_id=site_id or host, host=host,
             uri_prefix=prefix,
             observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
-            safeline_policy_id=policy_id, confidence=a["confidence"])
+            safeline_policy_id=policy_id, confidence=a["confidence"],
+            source="ai-closed-loop", sample=sample)
         log("rule created: %s (policy_id=%s) prefix=%s conf=%.2f" %
             (name, policy_id, prefix, a["confidence"]))
 
@@ -392,6 +397,10 @@ class Engine(threading.Thread):
         if (a["verdict"] == "attack"
                 and a["confidence"] >= config.MIN_CONFIDENCE
                 and not a.get("_error")):
+            if config.RUN_MODE == "alert-only":
+                log("miss alert (no rule): [%s] conf=%.2f" %
+                    (cand["client"], a["confidence"]))
+                return
             self._maybe_create_rule(
                 {"host": cand["host"], "uri": cand["uri"],
                  "payload": query or cand["uri"]}, a)
@@ -463,6 +472,11 @@ class Engine(threading.Thread):
                 if self._regex_hits_normal(r["regex"]):
                     self._delete_rule(
                         r, "promote-guard: matches normal traffic")
+                    continue
+                if config.RUN_MODE == "human-review":
+                    db.update_rule(r["id"], status="pending_review")
+                    log("rule pending review: %s (hits=%d)" %
+                        (r["name"], r["hits"]))
                     continue
                 db.update_rule(r["id"], status="promoted",
                                zero_hit_since=_iso(now))
@@ -549,3 +563,34 @@ class Engine(threading.Thread):
             return
         db.update_rule(rule["id"], status="recycled")
         log("rule recycled: %s (%s)" % (rule["name"], reason))
+
+    # ---------------- 人工审批 / 应急回滚 ----------------
+
+    def approve_rule(self, rule_id):
+        """人工批准一条待审规则转正（human-review 模式）。"""
+        for r in db.all_rules():
+            if r["id"] == rule_id:
+                if r["status"] != "pending_review":
+                    log("approve %s: status=%s not pending" %
+                        (r["name"], r["status"]))
+                    return False
+                db.update_rule(rule_id, status="promoted",
+                               zero_hit_since=_iso(_now()))
+                log("rule approved & promoted: %s" % r["name"])
+                return True
+        log("approve: rule %s not found" % rule_id)
+        return False
+
+    def rollback_ai_rules(self):
+        """批量禁用所有 AI 闭环规则（误杀应急回滚）。"""
+        rules = db.list_ai_rules()
+        n = 0
+        for r in rules:
+            try:
+                self.safeline.switch_policy(r["safeline_policy_id"], False)
+                db.update_rule(r["id"], status="recycled")
+                n += 1
+            except Exception as e:
+                log("rollback %s failed: %s" % (r["name"], e))
+        log("rollback: disabled %d AI rules" % n)
+        return n

@@ -5,6 +5,8 @@ from urllib.parse import urlparse, parse_qs
 
 from . import config, db
 
+ENGINE = None  # 由 main 注入，供审批/回滚端点调用
+
 PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -44,13 +46,14 @@ border:1px solid var(--line)}
 footer{color:var(--dim);padding:10px 26px 30px;font-size:12px}
 </style></head><body>
 <header><h1>AI-WAF</h1>
-<span class="tag">雷池日志 → 本地 LLM 研判 → 自定义规则闭环 | 面板端口 %PORT%</span></header>
+<span class="tag">模式 %RUNMODE% · 面板端口 %PORT%</span></header>
 <div class="cards" id="cards"></div>
 <main>
-<section><h2>AI 规则库（生命周期：观察期→转正→回收，上限 300）</h2>
+<section><h2>AI 规则库（生命周期：观察期→转正→回收，上限 300）
+<button onclick="rollback()" style="float:right;font-size:12px;padding:4px 10px;background:#ff5c6c;color:#fff;border:0;border-radius:6px;cursor:pointer">批量禁用 AI 规则</button></h2>
 <table><thead><tr><th>ID</th><th>名称</th><th>正则</th><th>状态</th><th>命中</th>
-<th>置信度</th><th>作用域</th><th>到期</th><th>雷池ID</th></tr></thead>
-<tbody id="rules"><tr><td colspan="9">加载中…</td></tr></tbody></table></section>
+<th>置信度</th><th>作用域</th><th>到期</th><th>雷池ID</th><th>操作</th></tr></thead>
+<tbody id="rules"><tr><td colspan="10">加载中…</td></tr></tbody></table></section>
 <section><h2>攻击事件与 AI 研判</h2>
 <table><thead><tr><th>#</th><th>时间</th><th>源IP</th><th>域名</th><th>URI</th>
 <th>类型</th><th>研判</th><th>置信度</th><th>解释</th></tr></thead>
@@ -80,8 +83,9 @@ async function load(){
    <td>${r.hits}</td><td>${(+r.confidence).toFixed(2)}</td>
    <td class="mono">${esc(r.uri_prefix||'-')} @ ${esc(r.host||r.site_id||'-')}</td>
    <td class="mono">${esc(r.observed_until||'')}</td>
-   <td>${r.safeline_policy_id??''}</td></tr>`).join('')
-  :`<tr><td colspan="9">暂无 AI 规则</td></tr>`);
+   <td>${r.safeline_policy_id??''}</td>
+   <td>${r.status==='pending_review'?`<button onclick="approve(${r.id})">批准</button>`:''}</td></tr>`).join('')
+  :`<tr><td colspan="10">暂无 AI 规则</td></tr>`);
   document.getElementById('events').innerHTML=(ev.length?ev.map(e=>
    `<tr><td>${e.safeline_id}</td><td class="mono">${esc(e.ts)}</td>
    <td class="mono">${esc(e.src_ip)}</td><td>${esc(e.host)}</td>
@@ -92,6 +96,8 @@ async function load(){
   :`<tr><td colspan="9">暂无事件</td></tr>`);
  }catch(err){document.getElementById('cards').textContent='接口异常: '+err}
 }
+async function approve(id){await fetch('/api/rules/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});load()}
+async function rollback(){if(!confirm('确认批量禁用所有 AI 规则？'))return;await fetch('/api/rules/rollback',{method:'POST'});load()}
 load();setInterval(load,10000);
 </script></body></html>"""
 
@@ -117,7 +123,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         qs = parse_qs(u.query)
         if u.path == "/":
-            return self._html(PAGE.replace("%PORT%", str(config.WEB_PORT)))
+            return self._html(PAGE.replace("%PORT%", str(config.WEB_PORT))
+                              .replace("%RUNMODE%", config.RUN_MODE))
         if u.path == "/api/stats":
             return self._json(db.stats())
         if u.path == "/api/events":
@@ -129,11 +136,32 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(db.all_rules())
         self._json({"err": "not found"}, 404)
 
+    def do_POST(self):
+        u = urlparse(self.path)
+        ln = int(self.headers.get("Content-Length") or 0)
+        try:
+            body = json.loads(self.rfile.read(ln) or b"{}")
+        except (ValueError, TypeError):
+            body = {}
+        if u.path == "/api/rules/approve":
+            if ENGINE is None:
+                return self._json({"err": "engine not available"}, 500)
+            rid = int(body.get("id") or 0)
+            return self._json({"ok": ENGINE.approve_rule(rid)})
+        if u.path == "/api/rules/rollback":
+            if ENGINE is None:
+                return self._json({"err": "engine not available"}, 500)
+            return self._json({"ok": True,
+                               "disabled": ENGINE.rollback_ai_rules()})
+        self._json({"err": "not found"}, 404)
+
     def log_message(self, *args):
         pass
 
 
-def serve():
+def serve(engine=None):
+    global ENGINE
+    ENGINE = engine
     httpd = ThreadingHTTPServer((config.WEB_HOST, config.WEB_PORT), Handler)
     httpd.daemon_threads = True
     print("AI-WAF panel: http://%s:%d" % (config.WEB_HOST, config.WEB_PORT),

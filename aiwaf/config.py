@@ -29,6 +29,12 @@ LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))  # 输出上限：
 LLM_TEMP = 0.1
 LLM_GRAMMAR = os.environ.get("LLM_GRAMMAR", "builtin")  # builtin=内置JSON grammar；空串=关闭；路径=自定义GBNF
 
+# ---- 运行模式（规则下发策略） ----
+# auto         : 自动闭环，观察期达标自动转正
+# human-review : 观察期达标后转人工审批，不自动转正
+# alert-only   : AI 只研判告警，不下发任何规则
+RUN_MODE = os.environ.get("RUN_MODE", "auto")
+
 # ---- 轮询 ----
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))     # 秒
 ANALYZE_DELAY = int(os.environ.get("ANALYZE_DELAY", "5"))      # 事件拉回后延迟研判秒数(等日志齐)

@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS rules (
     safeline_policy_id INTEGER,
     merged_into INTEGER,
     confidence REAL NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'ai-closed-loop',
+    sample TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -101,9 +103,20 @@ def init():
         conn = get_conn()
         try:
             conn.executescript(SCHEMA)
+            _migrate(conn)
             conn.commit()
         finally:
             conn.close()
+
+
+def _migrate(conn):
+    """为已存在的旧库补列（CREATE TABLE IF NOT EXISTS 不会给旧表加新列）。"""
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(rules)")]
+    if "source" not in cols:
+        conn.execute(
+            "ALTER TABLE rules ADD COLUMN source TEXT NOT NULL DEFAULT 'ai-closed-loop'")
+    if "sample" not in cols:
+        conn.execute("ALTER TABLE rules ADD COLUMN sample TEXT NOT NULL DEFAULT ''")
 
 
 # ---------------- kv ----------------
@@ -274,18 +287,19 @@ def events_payloads_since(event_id, limit=5000):
 # ---------------- rules ----------------
 
 def add_rule(name, regex, site_id, host, uri_prefix, observed_until,
-             safeline_policy_id, confidence):
+             safeline_policy_id, confidence, source="ai-closed-loop", sample=""):
     with _lock:
         conn = get_conn()
         try:
             cur = conn.execute(
                 "INSERT INTO rules"
                 "(name, regex, site_id, host, uri_prefix, status,"
-                " observed_until, safeline_policy_id, confidence,"
-                " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                " observed_until, safeline_policy_id, confidence, source,"
+                " sample, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, regex, site_id, host, uri_prefix, "observing",
-                 observed_until, safeline_policy_id, confidence,
-                 _now(), _now()),
+                 observed_until, safeline_policy_id, confidence, source,
+                 sample, _now(), _now()),
             )
             conn.commit()
             return cur.lastrowid
@@ -307,7 +321,7 @@ def active_rules():
     conn = get_conn()
     try:
         rows = conn.execute(
-            "SELECT * FROM rules WHERE status IN ('observing','promoted') "
+            "SELECT * FROM rules WHERE status IN ('observing','promoted','pending_review') "
             "AND merged_into IS NULL ORDER BY id",
         ).fetchall()
         return [dict(r) for r in rows]
@@ -341,6 +355,32 @@ def rule_regex_exists(regex):
             (regex,),
         ).fetchone()
         return row is not None
+    finally:
+        conn.close()
+
+
+def list_rules_by_status(status):
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM rules WHERE status=? AND merged_into IS NULL ORDER BY id",
+            (status,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def list_ai_rules():
+    """所有 AI 闭环生成、仍在雷池生效的规则（用于批量回滚）。"""
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM rules WHERE source='ai-closed-loop' "
+            "AND status IN ('observing','promoted','pending_review') "
+            "AND merged_into IS NULL ORDER BY id",
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
