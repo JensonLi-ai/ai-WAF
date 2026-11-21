@@ -113,6 +113,41 @@ def _fix_broken_regex(regex):
         return None
 
 
+def _literal_rule(row):
+    """从触发样本提炼字面正则兜底（模型正则失败时的安全网）。
+
+    对 payload 做正则转义得到精确字面匹配，保证至少能拦住同一 payload
+    的后续重放。payload 为空或无法保证特指性时返回 None。
+    """
+    payload = (row.get("payload") or "").strip()
+    if not payload:
+        return None
+    esc = re.escape(payload)
+    if len(esc) > 200:
+        esc = esc[:200]
+    if not _regex_specific_enough(esc)[0]:
+        return None
+    return esc
+
+
+def _resolve_rule(row, a, sample):
+    """优先用模型生成的正则（可编译+命中样本+特指性三关），无效则退回字面规则。
+
+    目标：模型判对（verdict=attack）时尽量有规则可落地，避免「判得出但拦不住」。
+    """
+    candidate = re.sub(r"^/|\s*$", "",
+                       (a.get("suggested_rule") or "").strip()).strip("/")
+    if candidate and len(candidate) <= 512:
+        try:
+            re.compile(candidate)
+        except re.error:
+            candidate = _fix_broken_regex(candidate) or ""
+        if candidate and (not sample or re.search(candidate, sample)) \
+                and _regex_specific_enough(candidate)[0]:
+            return candidate
+    return _literal_rule(row)
+
+
 def _parse_ts(s, default=None):
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
@@ -226,28 +261,10 @@ class Engine(threading.Thread):
             self._maybe_create_rule(row2, a)
 
     def _maybe_create_rule(self, row, a):
-        regex = re.sub(r"^/|\s*$", "", (a.get("suggested_rule") or "").strip()
-                       ).strip("/")
-        if not regex or len(regex) > 512:
-            log("skip rule: ill-formed regex (%d chars)" % len(regex))
-            return
-        try:
-            re.compile(regex)
-        except re.error as e:
-            fixed = _fix_broken_regex(regex)
-            if fixed is None:
-                log("skip rule: invalid regex %r: %s" % (regex, e))
-                return
-            log("rule fixed: strip trailing backslash %r -> %r" %
-                (regex[:60], fixed[:60]))
-            regex = fixed
-        sample = "%s %s" % (row.get("uri") or "", row.get("payload") or "")
-        if sample.strip() and not re.search(regex, sample):
-            log("skip rule: regex does not match triggering sample: %r" % regex[:60])
-            return
-        ok, why = _regex_specific_enough(regex)
-        if not ok:
-            log("skip rule: regex too broad (%s): %r" % (why, regex[:60]))
+        sample = "%s %s" % (row.get("uri") or "", row.get("payload") or "").strip()
+        regex = _resolve_rule(row, a, sample)
+        if regex is None:
+            log("skip rule: no valid regex (model + literal fallback both failed)")
             return
         if db.rule_regex_exists(regex):
             log("skip rule: regex already covered: %r" % regex[:60])

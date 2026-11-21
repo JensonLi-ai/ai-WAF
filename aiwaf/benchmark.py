@@ -17,7 +17,7 @@ import re
 import time
 
 from . import config
-from .engine import MISS_SUSPECT_RE, _fix_broken_regex, _regex_specific_enough
+from .engine import MISS_SUSPECT_RE, _fix_broken_regex, _regex_specific_enough, _resolve_rule
 from .llm_client import LlmClient
 
 # ---- 攻击样本：(类别, 名称, payload) ----
@@ -160,6 +160,7 @@ def run(category=None, limit=None):
     rule_gen = 0
     rule_valid = 0
     rule_bad = []
+    e2e_intercepted = 0
     total = len(atk)
     print("== 攻击样本 %d 条 ==" % total, flush=True)
     for i, (cat, name, payload) in enumerate(atk, 1):
@@ -177,6 +178,11 @@ def run(category=None, limit=None):
             missed.append({"cat": cat, "name": name,
                            "verdict": a["verdict"],
                            "conf": a["confidence"], "why": a["explain"][:80]})
+        if hit:
+            # 端到端拦截：检出 且 有可落地规则（模型正则优先，失败则字面兜底）
+            resolved = _resolve_rule({"payload": payload}, a, sample=payload)
+            if resolved:
+                e2e_intercepted += 1
         if hit and a.get("suggested_rule"):
             rule_gen += 1
             ok, why = _judge_rule_quality(payload, a["suggested_rule"])
@@ -206,6 +212,8 @@ def run(category=None, limit=None):
           (atk_screened, total))
     print("规则质量: 生成 %d 条，有效 %d 条（可编译+命中样本+过特指性）" %
           (rule_gen, rule_valid))
+    print("端到端拦截率: %d/%d = %.0f%%（检出 且 规则可落地，闭环真实拦截能力）" %
+          (e2e_intercepted, total, 100.0 * e2e_intercepted / total))
     if missed:
         print("\n漏检明细:")
         for m in missed:
@@ -250,6 +258,8 @@ def run(category=None, limit=None):
                    "rate": round(100.0 * detected / total, 1),
                    "avg_ms": round(avg_ms), "avg_conf": round(avg_conf, 3),
                    "rule_gen": rule_gen, "rule_valid": rule_valid,
+                   "e2e_intercepted": e2e_intercepted,
+                   "e2e_rate": round(100.0 * e2e_intercepted / total, 1),
                    "screened": atk_screened,
                    "per_cat": per_cat, "missed": missed},
         "normal": {"total": total_n, "false_pos": len(fp),

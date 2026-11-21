@@ -181,7 +181,38 @@ class LlmClient:
                 return json.loads(m.group(0))
             except ValueError:
                 pass
-        return None
+        # 截断/未闭合 JSON 抢救：grammar 约束下模型卡死会吐空格到上限，
+        # 此时前几个字段往往已完整，提取出来让引擎走字面规则兜底。
+        return LlmClient._parse_partial(text)
+
+    @staticmethod
+    def _parse_partial(text):
+        """抢救截断/未闭合的 JSON（grammar 卡死吐空格、或输出被 max_tokens 截断）。
+
+        只要提取到 verdict 就返回 dict，其余字段尽量提取；suggested_rule 提不到
+        也没关系——引擎会用字面规则兜底。
+        """
+        if not text or not text.lstrip().startswith("{"):
+            return None
+
+        def _field(name):
+            m = re.search(r'"%s"\s*:\s*"([^"]*)"' % re.escape(name), text)
+            return m.group(1) if m else None
+
+        verdict = _field("verdict")
+        if verdict not in ("attack", "benign", "unknown"):
+            return None
+        conf = 0.0
+        m = re.search(r'"confidence"\s*:\s*([0-9]*\.?[0-9]+)', text)
+        if m:
+            conf = float(m.group(1))
+        return {
+            "verdict": verdict,
+            "confidence": conf,
+            "variant": _field("variant"),
+            "suggested_rule": _field("suggested_rule"),
+            "explain": _field("explain") or "",
+        }
 
     def analyze(self, event):
         """研判单条事件，返回规范化 dict。
