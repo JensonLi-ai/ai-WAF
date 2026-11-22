@@ -130,8 +130,57 @@ def _literal_rule(row):
     return esc
 
 
+_CMDI_CMDS = (
+    "id", "whoami", "cat", "ls", "pwd", "sh", "bash", "uname",
+    "ifconfig", "ipconfig", "net", "ping", "wget", "curl", "nc",
+    "nslookup", "dir", "type", "systeminfo", "hostname",
+)
+
+
+def _anchor_rule(payload):
+    """锚点提取：针对短 payload（字面规则特指性不足）提炼适度泛化的攻击规则。
+
+    仅识别白名单内的攻击语法锚点（管道/分号/反引号/$()/引号闭合/注释/恒真式/
+    alert 等），确定性构造规则，不依赖 LLM 生成。锚点本身即特指性保证，
+    误杀风险靠转正前正常池回放兜底。
+    """
+    p = payload or ""
+    if not p:
+        return None
+    # XSS：alert/prompt/confirm（优先，避免 ;alert 被误判为命令注入）
+    m = re.search(r'\b(alert|prompt|confirm)\s*\(', p, re.I)
+    if m:
+        return r'\b' + m.group(1).lower() + r'\s*\('
+    # 命令注入：反引号
+    if p.count('`') >= 2:
+        return r"`[^`]+`"
+    # 命令注入：$()
+    if '$(' in p:
+        return r'\$\([^)]*\)'
+    # 命令注入：管道符 |cmd（白名单命令名）
+    m = re.search(r'\|\s*([A-Za-z0-9_./-]{1,32})', p)
+    if m and m.group(1).lower() in _CMDI_CMDS:
+        return r'\|\s*' + re.escape(m.group(1))
+    # 命令注入：分号 ;cmd（白名单命令名）
+    m = re.search(r';\s*([A-Za-z0-9_./-]{1,32})', p)
+    if m and m.group(1).lower() in _CMDI_CMDS:
+        return r';\s*' + re.escape(m.group(1))
+    # SQL：引号闭合 + or/and
+    m = re.search(r"'\s*(or|and)\b", p, re.I)
+    if m:
+        return r"(?i)'\s*(or|and)\b"
+    # SQL：引号 + 注释
+    if re.search(r"'\s*--", p) or re.search(r"'\s*#", p):
+        return r"'\s*(--|#)"
+    # SQL：恒真式 + 注释
+    if re.search(r'\b(or|and)\b', p, re.I) and '--' in p:
+        return r'(?i)\b(or|and)\b.*--'
+    return None
+
+
 def _resolve_rule(row, a, sample):
-    """优先用模型生成的正则（可编译+命中样本+特指性三关），无效则退回字面规则。
+    """优先用模型生成的正则（可编译+命中样本+特指性三关），无效则退回字面规则，
+    字面规则特指性不足时再做锚点提取。
 
     目标：模型判对（verdict=attack）时尽量有规则可落地，避免「判得出但拦不住」。
     """
@@ -145,7 +194,10 @@ def _resolve_rule(row, a, sample):
         if candidate and (not sample or re.search(candidate, sample)) \
                 and _regex_specific_enough(candidate)[0]:
             return candidate
-    return _literal_rule(row)
+    literal = _literal_rule(row)
+    if literal:
+        return literal
+    return _anchor_rule(row.get("payload") or "")
 
 
 def _parse_ts(s, default=None):
