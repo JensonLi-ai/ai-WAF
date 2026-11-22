@@ -14,10 +14,7 @@ SAFELINE_BASE = os.environ.get("SAFELINE_BASE", "https://localhost:9443")
 # "jwt"     = 前端会话 JWT（Authorization: Bearer，仅原型，会随会话失效）
 SAFELINE_AUTH_MODE = os.environ.get("SAFELINE_AUTH_MODE", "openapi")
 SAFELINE_OPENAPI_TOKEN = os.environ.get("SAFELINE_OPENAPI_TOKEN", "")
-SAFELINE_TOKEN = os.environ.get(
-    "SAFELINE_TOKEN",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVaWQiOjEsIlVzZXJuYW1lIjoiYWRtaW4iLCJSb2xlIjoxLCJQd2QiOnRydWUsIlRmYSI6ZmFsc2UsIlZlciI6MH0.xS6I3lIJ4qrQcAbP7X3L53G6noq1IRBBm4GqyXOJvqg",
-)
+SAFELINE_TOKEN = os.environ.get("SAFELINE_TOKEN", "")  # jwt 模式从环境变量注入，勿硬编码
 SAFELINE_PAGE_SIZE = 100          # 拉取攻击日志每页条数
 SSL_VERIFY = False                # 雷池自签证书，原型阶段不校验证书
 

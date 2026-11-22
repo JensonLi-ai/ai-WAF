@@ -1,5 +1,5 @@
 #!/bin/bash
-TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJVaWQiOjEsIlVzZXJuYW1lIjoiYWRtaW4iLCJSb2xlIjoxLCJQd2QiOnRydWUsIlRmYSI6ZmFsc2UsIlZlciI6MH0.xS6I3lIJ4qrQcAbP7X3L53G6noq1IRBBm4GqyXOJvqg"
+TOKEN="${SAFELINE_TOKEN:?请先设置环境变量 SAFELINE_TOKEN}"
 echo "== one full list record =="
 curl -sk -m 10 "https://localhost:9443/api/open/records?page=1&page_size=1" -H "Authorization: Bearer $TOKEN"
 echo
