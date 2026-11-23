@@ -17,7 +17,8 @@ import re
 import time
 
 from . import config
-from .engine import MISS_SUSPECT_RE, _fix_broken_regex, _regex_specific_enough, _resolve_rule
+from .engine import (MISS_SUSPECT_RE, _fix_broken_regex, _regex_specific_enough,
+                     _llm_anchor_rule, _repair_rule, _resolve_rule)
 from .llm_client import LlmClient
 
 # ---- 攻击样本：(类别, 名称, payload) ----
@@ -158,7 +159,10 @@ def run(category=None, limit=None):
     latencies = []
     confs = []
     rule_gen = 0
+    rule_raw_valid = 0
     rule_valid = 0
+    rule_repaired = 0
+    rule_anchor_valid = 0
     rule_bad = []
     e2e_intercepted = 0
     total = len(atk)
@@ -183,13 +187,27 @@ def run(category=None, limit=None):
             resolved = _resolve_rule({"payload": payload}, a, sample=payload)
             if resolved:
                 e2e_intercepted += 1
-        if hit and a.get("suggested_rule"):
+        if hit and (a.get("suggested_rule") or a.get("rule_anchors")):
             rule_gen += 1
-            ok, why = _judge_rule_quality(payload, a["suggested_rule"])
-            if ok:
+            ok, why = False, "empty"
+            if a.get("suggested_rule"):
+                ok, why = _judge_rule_quality(payload, a["suggested_rule"])
+                if ok:
+                    rule_raw_valid += 1
+            # 修复后规则质量：确定性修复（词边界/URL 编码/引号/大小写/上下文收紧）
+            repaired = _repair_rule(a.get("suggested_rule"), payload)
+            anchored = None if repaired else \
+                _llm_anchor_rule(payload, a.get("rule_anchors") or [])
+            if repaired or anchored:
                 rule_valid += 1
+                if not ok:
+                    if repaired:
+                        rule_repaired += 1
+                    else:
+                        rule_anchor_valid += 1
             else:
-                rule_bad.append({"name": name, "rule": a["suggested_rule"][:80],
+                rule_bad.append({"name": name,
+                                 "rule": (a.get("suggested_rule") or "")[:80],
                                  "why": why})
         print("  [%d/%d] %-6s %-20s -> %-7s conf=%.2f  %dms" %
               (i, total, cat, name, a["verdict"], a["confidence"], ms),
@@ -203,17 +221,18 @@ def run(category=None, limit=None):
               (cat, c["total"], c["detected"],
                100.0 * c["detected"] / c["total"]))
     print("%-12s %6d %6d %7.0f%%" %
-          ("合计", total, detected, 100.0 * detected / total))
+          ("合计", total, detected, 100.0 * detected / total if total else 0))
     avg_ms = sum(latencies) / len(latencies) if latencies else 0
     avg_conf = sum(confs) / len(confs) if confs else 0
     print("平均研判延迟: %.0f ms/条；检出样本平均置信度: %.2f" %
           (avg_ms, avg_conf))
     print("粗筛(MISS_SUSPECT_RE)命中 %d/%d 条（生产链路中，被雷池漏判且粗筛未命中的攻击到不了 LLM）" %
           (atk_screened, total))
-    print("规则质量: 生成 %d 条，有效 %d 条（可编译+命中样本+过特指性）" %
-          (rule_gen, rule_valid))
+    print("规则质量: 生成 %d 条，原始有效 %d 条，最终有效 %d 条"
+          "（可编译+命中样本+过特指性；其中 %d 条靠修复、%d 条靠锚点转正）" %
+          (rule_gen, rule_raw_valid, rule_valid, rule_repaired, rule_anchor_valid))
     print("端到端拦截率: %d/%d = %.0f%%（检出 且 规则可落地，闭环真实拦截能力）" %
-          (e2e_intercepted, total, 100.0 * e2e_intercepted / total))
+          (e2e_intercepted, total, 100.0 * e2e_intercepted / total if total else 0))
     if missed:
         print("\n漏检明细:")
         for m in missed:
@@ -255,11 +274,13 @@ def run(category=None, limit=None):
     return {
         "model": client.model,
         "attack": {"total": total, "detected": detected,
-                   "rate": round(100.0 * detected / total, 1),
+                   "rate": round(100.0 * detected / total, 1) if total else 0,
                    "avg_ms": round(avg_ms), "avg_conf": round(avg_conf, 3),
-                   "rule_gen": rule_gen, "rule_valid": rule_valid,
+                   "rule_gen": rule_gen, "rule_raw_valid": rule_raw_valid,
+                   "rule_valid": rule_valid, "rule_repaired": rule_repaired,
+                   "rule_anchor_valid": rule_anchor_valid,
                    "e2e_intercepted": e2e_intercepted,
-                   "e2e_rate": round(100.0 * e2e_intercepted / total, 1),
+                   "e2e_rate": round(100.0 * e2e_intercepted / total, 1) if total else 0,
                    "screened": atk_screened,
                    "per_cat": per_cat, "missed": missed},
         "normal": {"total": total_n, "false_pos": len(fp),

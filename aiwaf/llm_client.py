@@ -18,13 +18,15 @@ from . import config
 # （通用 json.gbnf 允许空对象 {}，14B 小模型会"偷懒"直接输出 {} 就 stop）
 # 注意：规则名不能用下划线——LM Studio 自带 llama.cpp 的 GBNF 解析器不认。
 ANALYSIS_GBNF = r"""
-root ::= "{" ws kvverdict "," ws kvvariant "," ws kvconfidence "," ws kvsuggested "," ws kvexplain ws "}" ws
+root ::= "{" ws kvverdict "," ws kvvariant "," ws kvconfidence "," ws kvsuggested "," ws kvanchors "," ws kvexplain ws "}" ws
 kvverdict ::= "\"verdict\"" ws ":" ws verdict
 kvvariant ::= "\"variant\"" ws ":" ws string
 kvconfidence ::= "\"confidence\"" ws ":" ws number
 kvsuggested ::= "\"suggested_rule\"" ws ":" ws string
+kvanchors ::= "\"rule_anchors\"" ws ":" ws arr
 kvexplain ::= "\"explain\"" ws ":" ws string
 verdict ::= "\"attack\"" | "\"benign\"" | "\"unknown\""
+arr ::= "[" ws (string (ws "," ws string)*)? ws "]"
 string ::=
   "\"" (
     [^"\\] |
@@ -42,7 +44,10 @@ SYSTEM_PROMPT = """你是 WEB 应用防火墙（WAF）的 AI 研判引擎。分�
 - variant: 仅当该攻击是雷池语义引擎难以识别的新颖/变形攻击时，给一个简短
   命名（如 xss_svg_onload_var）；常见已知攻击或正常请求则留空字符串 ""
 - confidence: 0~1 的置信度，越接近 1 越确信是攻击
-- suggested_rule: 仅当高置信度且属于新颖变种时，给一条 Python re 兼容正则，
+- rule_anchors: 攻击样本必填——从 payload 中【逐字复制】1~4 段最能代表攻击语义的
+  子串（必须原样出现在 payload 里，按出现顺序排列；正常请求留空 []）。引擎会把它们
+  拼成正则并校验，凡不在 payload 原文中的锚点会被丢弃。不要自创、不要转义、不要改写。
+- suggested_rule: 可选。仅当高置信度且属于新颖变种时，给一条 Python re 兼容正则，
   尽量具体只匹配该攻击特征，禁止 .* 大范围通配；必须能匹配输入 payload 里的
   真实片段，且反斜杠等特殊字符需双重转义；否则留空 ""
 - explain: 一句中文结论
@@ -50,42 +55,53 @@ SYSTEM_PROMPT = """你是 WEB 应用防火墙（WAF）的 AI 研判引擎。分�
 严格模仿下列三个示例的判断口径与措辞：
 例1（变形攻击）：
 输入：{"host":"demo.test","uri":"/?q=<svg onload=alert(1)>","payload":"<svg onload=alert(1)>"}
-输出：{"verdict":"attack","variant":"xss_svg_onload_var","confidence":0.97,"suggested_rule":"<svg[^>]*\\sonload\\s*=","explain":"SVG 标签携带 onload 事件，属变形 XSS，固定关键词规则易漏判"}
+输出：{"verdict":"attack","variant":"xss_svg_onload_var","confidence":0.97,"rule_anchors":["<svg","onload=","alert(1)"],"suggested_rule":"<svg[^>]*\\sonload\\s*=","explain":"SVG 标签携带 onload 事件，属变形 XSS，固定关键词规则易漏判"}
 
 例2（正常请求）：
 输入：{"host":"demo.test","uri":"/?q=hello%20world","payload":"hello world"}
-输出：{"verdict":"benign","variant":"","confidence":0.99,"suggested_rule":"","explain":"普通文本参数，无攻击特征"}
+输出：{"verdict":"benign","variant":"","confidence":0.99,"rule_anchors":[],"suggested_rule":"","explain":"普通文本参数，无攻击特征"}
 
 例3（命令注入变种）：
 输入：{"host":"demo.test","uri":"/?cmd=|id","payload":"|id"}
-输出：{"verdict":"attack","variant":"cmdi_pipe_var","confidence":0.96,"suggested_rule":"\\|\\s*(id|whoami|cat)\\b","explain":"管道符注入命令，属命令注入变种"}
+输出：{"verdict":"attack","variant":"cmdi_pipe_var","confidence":0.96,"rule_anchors":["|id"],"suggested_rule":"\\|\\s*(id|whoami|cat)\\b","explain":"管道符注入命令，属命令注入变种"}
 
 例4（时间盲注）：
 输入：{"host":"demo.test","uri":"/?id=1 AND sleep(5)","payload":"1 AND sleep(5)"}
-输出：{"verdict":"attack","variant":"sqli_time_based","confidence":0.95,"suggested_rule":"\\bsleep\\s*\\(","explain":"sleep 延时注入，属时间盲注"}
+输出：{"verdict":"attack","variant":"sqli_time_based","confidence":0.95,"rule_anchors":["AND","sleep(5)"],"suggested_rule":"(?i)\\band\\s+sleep\\s*\\(\\s*\\d+","explain":"sleep 延时注入，属时间盲注"}
 
 例5（路径穿越）：
 输入：{"host":"demo.test","uri":"/?file=../../etc/passwd","payload":"../../etc/passwd"}
-输出：{"verdict":"attack","variant":"path_traversal","confidence":0.96,"suggested_rule":"\\.\\./.*(etc/passwd|win.ini)","explain":"目录穿越读取敏感文件"}
+输出：{"verdict":"attack","variant":"path_traversal","confidence":0.96,"rule_anchors":["../../","etc/passwd"],"suggested_rule":"\\.\\./.*(etc/passwd|win.ini)","explain":"目录穿越读取敏感文件"}
 
 例6（SSRF 云元数据）：
 输入：{"host":"demo.test","uri":"/?url=http://169.254.169.254/latest/meta-data/","payload":"http://169.254.169.254/latest/meta-data/"}
-输出：{"verdict":"attack","variant":"ssrf_metadata","confidence":0.95,"suggested_rule":"169\\.254\\.169\\.254|/latest/meta-data","explain":"访问云元数据地址，属 SSRF"}
+输出：{"verdict":"attack","variant":"ssrf_metadata","confidence":0.95,"rule_anchors":["169.254.169.254","/latest/meta-data"],"suggested_rule":"169\\.254\\.169\\.254|/latest/meta-data","explain":"访问云元数据地址，属 SSRF"}
 
 容易误判的正常请求（必须判 benign，不要只看关键词）：
 例7（单独关键词搜索）：
 输入：{"host":"demo.test","uri":"/?q=sleep","payload":"sleep"}
-输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"单独的单词搜索，无函数调用或注入语法，属正常请求"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"rule_anchors":[],"suggested_rule":"","explain":"单独的单词搜索，无函数调用或注入语法，属正常请求"}
 
 例8（站内登录跳转）：
 输入：{"host":"demo.test","uri":"/admin/login?redirect=/dashboard","payload":"redirect=/dashboard"}
-输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"站内登录跳转，redirect 指向站内路径，无 SSRF 构造"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"rule_anchors":[],"suggested_rule":"","explain":"站内登录跳转，redirect 指向站内路径，无 SSRF 构造"}
 
 例9（业务 JWT 参数）：
 输入：{"host":"demo.test","uri":"/?auth=eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.sig","payload":"auth=eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.sig"}
-输出：{"verdict":"benign","variant":"","confidence":0.95,"suggested_rule":"","explain":"正常业务 JWT 认证参数，三段结构完整，无注入特征"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"rule_anchors":[],"suggested_rule":"","explain":"正常业务 JWT 认证参数，三段结构完整，无注入特征"}
 
-判断原则：关键词不等于攻击。只有看到能构成注入/执行的语法结构（引号闭合注入、管道符、模板表达式、DOCTYPE 实体、序列化头等）才判 attack；只有关键词但无语境判 benign；确实拿不准判 unknown。suggested_rule 必须是合法 Python re 正则，JSON 内反斜杠一律写成双反斜杠 \\\\，禁止以反斜杠结尾。"""
+例10（技术名词/用法咨询）：
+输入：{"host":"demo.test","uri":"/?q=如何读取 cookie","payload":"如何读取 cookie"}
+输出：{"verdict":"benign","variant":"","confidence":0.95,"rule_anchors":[],"suggested_rule":"","explain":"技术名词或用法咨询，无赋值、注入或执行语法，属正常请求"}
+
+判断原则：关键词不等于攻击。只有看到能构成注入/执行的语法结构（引号闭合注入、管道符、模板表达式、DOCTYPE 实体、序列化头等）才判 attack；只有关键词但无语境判 benign；询问/解释某个技术名词（如 document.cookie、select、sleep 的含义或用法）一律判 benign；确实拿不准判 unknown。suggested_rule 必须是合法 Python re 正则，JSON 内反斜杠一律写成双反斜杠 \\\\，禁止以反斜杠结尾。
+
+规则书写硬性要求（不满足则视为无效规则）：
+1. 必须能匹配给出的 payload 原文。payload 可能是 URL 编码后的原始文本，规则要匹配你看到的字面字符（%27、%2f、%00），不要替换成解码后的字符（不要写 \\x00）。
+2. 禁止只写单个通用词：\\bsleep\\s*\\(、alert\\s*\\(、'--、-- 这类过泛规则会误杀正常业务。必须带上攻击上下文，例如引号闭合+注释、and/or+sleep(、管道符+命令名、事件属性+标签。
+3. 不要在非单词字符后面写 \\b（如 &&\\b、'\\b 永不成立）；不要在规则首尾加 ^ $ 锚点。
+4. 输出前先在心里用正则跑一遍 payload，确认能命中。
+5. rule_anchors 必须是 payload 的逐字子串（区分大小写），不要加引号或转义；攻击样本不得为空数组。"""
 
 
 # 模型想输出正则里的 \b（词边界）/ \f 等，但若在 JSON 字符串里只写单反斜杠，
@@ -251,10 +267,17 @@ class LlmClient:
             confidence = max(0.0, min(1.0, confidence))
         except (TypeError, ValueError):
             confidence = 0.0
+        anchors = []
+        raw_anchors = obj.get("rule_anchors")
+        if isinstance(raw_anchors, list):
+            for x in raw_anchors[:8]:
+                if isinstance(x, str) and x.strip():
+                    anchors.append(x.strip()[:120])
         return {
             "verdict": verdict,
             "confidence": confidence,
             "variant": obj.get("variant") or None,
+            "rule_anchors": anchors,
             "suggested_rule": _fix_regex_escapes(obj.get("suggested_rule") or None),
             "explain": obj.get("explain") or "",
             "model": self.model,

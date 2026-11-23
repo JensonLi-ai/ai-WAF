@@ -95,7 +95,172 @@ def _regex_specific_enough(regex):
     # 短通用词（sleep/benchmark/select/admin 等）一律拦下。
     if any(len(w) >= 10 for w in words):
         return True, "long-token"
+    # 结构性攻击语法：引号闭合+注释/分号、管道与逻辑符、事件处理器函数、成对反引号。
+    # 这类规则即使只有一个普通字面词也足够特指，例如 admin'\s*--、';alert\(1\)
+    flat = re.sub(r"\\s[*+?]?", "", regex.lower())
+    flat = re.sub(r"\\([^A-Za-z0-9])", r"\1", flat)
+    if flat.count("`") >= 2:
+        return True, "struct-marker"
+    # 多个百分号编码片段（%27、%2f、%3d）本身就是足够强的特征
+    if len(re.findall(r"%[0-9a-f]{2}", flat)) >= 2:
+        return True, "encoded-marker"
+    # PHP/Java 序列化头 O:8:... / aced0005 结构
+    if re.search(r"o:(?:\\d\+?|\d+):", flat) or "aced00" in flat:
+        return True, "struct-marker"
+    words2 = set(w.lower() for w in
+                 re.findall(r"[A-Za-z0-9_]{2,}", _CHARCLASS_ESC_RE.sub(" ", regex)))
+    # 编码后的攻击标点（%7c=| %3b=; %27=' %3c=< %60=` …）等同字面标点
+    for marker in ("'--", "'#", "';", '";', "&&", "||", "--",
+                   "%7c", "%3b", "%26", "%3c", "%3e", "%27", "%22",
+                   "%60", "%24", "%23", "alert(", "prompt(", "confirm("):
+        if marker in flat and (words2 or marker in ("alert(", "prompt(", "confirm(")):
+            return True, "struct-marker"
     return False, "too-broad literals=%r" % sorted(words)[:5]
+
+
+# \b 紧跟在非单词字符之后（如 &&\b、'\b）永远不成立，是模型常见笔误。
+_BAD_BOUNDARY_RE = re.compile(r"""(?<=[&|;'"`<>/=,:({\[.\\])\\b""")
+
+
+def _rule_matches(rule, sample):
+    try:
+        rx = re.compile(rule)
+    except re.error:
+        return False
+    return (not sample) or bool(rx.search(sample))
+
+
+def _rule_usable(rule, sample):
+    return bool(rule) and _rule_matches(rule, sample) \
+        and _regex_specific_enough(rule)[0]
+
+
+def _contextualize(rule, sample):
+    r"""规则过泛时，用样本中紧邻的上下文词把它收紧（仍能命中该样本）。
+
+    例：\bsleep\s*\( 在 "1 AND sleep(5)" 上收成 AND\W*(?:\bsleep\s*\()
+    """
+    # (?i) 等全局标志必须留在整条规则开头，包进分组里会编译失败
+    flags = ""
+    fm = re.match(r"\(\?[aiLmsux]+\)", rule)
+    if fm:
+        flags, rule = fm.group(0), rule[fm.end():]
+    try:
+        m = re.search(rule, sample)
+    except re.error:
+        return None
+    if not m:
+        return None
+    left, right = sample[:m.start()], sample[m.end():]
+    lt = re.search(r"([A-Za-z0-9_]{2,16})\W*$", left)
+    rt = re.match(r"\W*([A-Za-z0-9_]{2,16})", right)
+    if not lt and not rt:
+        return None
+    parts = []
+    if lt:
+        parts.append(re.escape(lt.group(1)) + r"\W*")
+    parts.append("(?:" + rule + ")")
+    if rt:
+        parts.append(r"\W*" + re.escape(rt.group(1)))
+    return flags + "".join(parts)
+
+
+def _repair_candidates(rule, sample):
+    """枚举模型规则的确定性修复候选（不改变攻击语义）。"""
+    base = (rule or "").strip()
+    # 去掉 JS 风格的包裹斜杠 /.../，但不要误删规则自带的路径首斜杠
+    if len(base) > 2 and base.startswith("/") and base.endswith("/"):
+        base = base[1:-1]
+    if not base:
+        return []
+    cands = [base]
+    fixed = _fix_broken_regex(base)
+    if fixed and fixed != base:
+        cands.append(fixed)
+    # 双重转义：模型把 \d 误写成 \\d（JSON 里过度转义）
+    for c in list(cands):
+        d = c.replace("\\\\", "\\")
+        if d != c:
+            cands.append(d)
+    for c in list(cands):
+        d = _BAD_BOUNDARY_RE.sub("", c)
+        if d != c:
+            cands.append(d)
+    sample = sample or ""
+    # 样本空格被编码成 %20 时，\s* 要同时接受 %20
+    if "%20" in sample.lower():
+        for c in list(cands):
+            d = c.replace(r"\s*", r"(?:\s|%20|\+)*") \
+                 .replace(r"\s+", r"(?:\s|%20|\+)+")
+            if d != c:
+                cands.append(d)
+    # 样本是 URL 编码原文时，\xHH 应改成 %HH 才能匹配
+    if "%" in sample:
+        for c in list(cands):
+            d = re.sub(r"\\x([0-9a-fA-F]{2})",
+                       lambda m: "%" + m.group(1).upper(), c)
+            if d != c:
+                cands.append(d)
+    # 引号风格不一致（payload 单引号、规则双引号）
+    for c in list(cands):
+        if '"' in c and "'" in sample:
+            cands.append(c.replace('"', "'"))
+        if "'" in c and '"' in sample:
+            cands.append(c.replace("'", '"'))
+    # 大小写不敏感兜底（URL 编码大小写、命令大小写绕过）
+    for c in list(cands):
+        cands.append("(?i)" + c)
+    return cands
+
+
+def _repair_rule(rule, sample):
+    """对模型正则做修复，返回首个可落地（可编译+命中+特指）版本，失败返回 None。"""
+    for c in _repair_candidates(rule, sample):
+        if _rule_usable(c, sample):
+            return c
+        if _rule_matches(c, sample):
+            ctx = _contextualize(c, sample)
+            if ctx and _rule_usable(ctx, sample):
+                return ctx
+    return None
+
+
+def _llm_anchor_rule(payload, anchors):
+    """用模型逐字给出的攻击锚点拼规则，锚点必须原样出现在 payload 中。
+
+    模型不擅长写正则、但擅长"指出哪段是攻击特征"。这里只采信 payload 里
+    逐字出现的锚点，按出现顺序用非贪婪间隔拼接，既保证命中原文，又允许
+    攻击者插入少量变形字符。
+    """
+    if not payload or not anchors:
+        return None
+    vals = []
+    for a in anchors:
+        a = (a or "").strip()
+        if a and len(a) <= 120 and a in payload:
+            vals.append(a)
+    if not vals:
+        return None
+    # 去重：短锚点若已被更长锚点包含则丢弃
+    uniq = []
+    for a in sorted(set(vals), key=len, reverse=True):
+        if not any(a in b for b in uniq):
+            uniq.append(a)
+    uniq.sort(key=payload.find)
+    parts = [re.escape(a) for a in uniq]
+    rule = r".{0,40}?".join(parts)
+    if len(rule) > 400:
+        return None
+    if _rule_usable(rule, payload):
+        return rule
+    # 两段以上的逐字锚点本身已足够特指（模型的中文词表阈值会低估纯符号锚点）
+    if len(uniq) >= 2 and sum(len(a) for a in uniq) >= 6:
+        return rule
+    # 锚点过短（如 |id）导致特指性不足时，用 payload 上下文收紧
+    ctx = _contextualize(rule, payload)
+    if ctx and _rule_usable(ctx, payload):
+        return ctx
+    return None
 
 
 def _fix_broken_regex(regex):
@@ -184,16 +349,15 @@ def _resolve_rule(row, a, sample):
 
     目标：模型判对（verdict=attack）时尽量有规则可落地，避免「判得出但拦不住」。
     """
-    candidate = re.sub(r"^/|\s*$", "",
-                       (a.get("suggested_rule") or "").strip()).strip("/")
-    if candidate and len(candidate) <= 512:
-        try:
-            re.compile(candidate)
-        except re.error:
-            candidate = _fix_broken_regex(candidate) or ""
-        if candidate and (not sample or re.search(candidate, sample)) \
-                and _regex_specific_enough(candidate)[0]:
-            return candidate
+    candidate = (a.get("suggested_rule") or "").strip()
+    if len(candidate) <= 512:
+        repaired = _repair_rule(candidate, sample)
+        if repaired:
+            return repaired
+    anchored = _llm_anchor_rule(row.get("payload") or sample,
+                                a.get("rule_anchors") or [])
+    if anchored:
+        return anchored
     literal = _literal_rule(row)
     if literal:
         return literal
