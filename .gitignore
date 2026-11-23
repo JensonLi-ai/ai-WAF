@@ -8,6 +8,8 @@ venv/
 # ---- 运行时数据（本地生成，勿提交） ----
 aiwaf/aiwaf.db
 aiwaf/aiwaf.db-journal
+aiwaf/aiwaf.db-wal
+aiwaf/aiwaf.db-shm
 aiwaf/miss_traffic.jsonl
 bench_*.json
 

@@ -1,4 +1,5 @@
 """AI-WAF 控制面板（stdlib http.server + 原生 JS 单页，无外部依赖）。"""
+import hmac
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -64,16 +65,27 @@ footer{color:var(--dim);padding:10px 26px 30px;font-size:12px}
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,
  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pill={attack:'v-attack',benign:'v-benign',unknown:'v-unknown'};
+async function api(url,opt){
+ opt=opt||{};const h=Object.assign({},opt.headers||{});
+ const t=localStorage.getItem('aiwaf_token')||'';if(t)h['X-Auth-Token']=t;
+ opt.headers=h;let r=await fetch(url,opt);
+ if(r.status===401){
+  const t2=prompt('请输入面板访问令牌（WEB_AUTH_TOKEN）');
+  if(t2){localStorage.setItem('aiwaf_token',t2);return api(url,opt);}
+  throw new Error('unauthorized');
+ }
+ return r;
+}
 async function load(){
  try{
   const [st,rl,ev]=await Promise.all([
-   fetch('/api/stats').then(r=>r.json()),
-   fetch('/api/rules').then(r=>r.json()),
-   fetch('/api/events?limit=40').then(r=>r.json())]);
+   api('/api/stats').then(r=>r.json()),
+   api('/api/rules').then(r=>r.json()),
+   api('/api/events?limit=40').then(r=>r.json())]);
   const cards=[['事件总数',st.total_events],['已研判',st.analyzed],
    ['攻击判定',st.attack_verdicts],['观察期规则',st.rules_observing],
    ['已转正规则',st.rules_promoted],['已回收',st.rules_recycled],
-   ['规则累计命中',st.rules_hits]];
+   ['规则累计命中',st.rules_hits],['缓存命中',st.cache_hits||0]];
   document.getElementById('cards').innerHTML=cards.map(([n,v])=>
    `<div class="card"><b>${esc(v)}</b><span>${esc(n)}</span></div>`).join('');
   document.getElementById('rules').innerHTML=(rl.length?rl.map(r=>
@@ -96,8 +108,8 @@ async function load(){
   :`<tr><td colspan="9">暂无事件</td></tr>`);
  }catch(err){document.getElementById('cards').textContent='接口异常: '+err}
 }
-async function approve(id){await fetch('/api/rules/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});load()}
-async function rollback(){if(!confirm('确认批量禁用所有 AI 规则？'))return;await fetch('/api/rules/rollback',{method:'POST'});load()}
+async function approve(id){await api('/api/rules/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});load()}
+async function rollback(){if(!confirm('确认批量禁用所有 AI 规则？'))return;await api('/api/rules/rollback',{method:'POST',headers:{'Content-Type':'application/json'}});load()}
 load();setInterval(load,10000);
 </script></body></html>"""
 
@@ -119,12 +131,39 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _token_ok(self):
+        """配置了 WEB_AUTH_TOKEN 时，校验 X-Auth-Token / ?token=。"""
+        token = config.WEB_AUTH_TOKEN
+        if not token:
+            return True
+        given = self.headers.get("X-Auth-Token") or ""
+        if not given:
+            qs = parse_qs(urlparse(self.path).query)
+            given = (qs.get("token") or [""])[0]
+        return hmac.compare_digest(given, token)
+
+    def _same_origin(self):
+        """存在 Origin 时必须与 Host 一致，阻断跨站提交。"""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return urlparse(origin).netloc == (self.headers.get("Host") or "")
+
     def do_GET(self):
         u = urlparse(self.path)
         qs = parse_qs(u.query)
         if u.path == "/":
             return self._html(PAGE.replace("%PORT%", str(config.WEB_PORT))
                               .replace("%RUNMODE%", config.RUN_MODE))
+        if u.path == "/api/health":
+            return self._json({"ok": True, "run_mode": config.RUN_MODE,
+                               "engine": ENGINE is not None})
+        if not self._token_ok():
+            return self._json({"err": "unauthorized"}, 401)
+        if u.path == "/api/metrics":
+            m = ENGINE.metrics_snapshot() if ENGINE is not None else {}
+            m.update(db.stats())
+            return self._json(m)
         if u.path == "/api/stats":
             return self._json(db.stats())
         if u.path == "/api/events":
@@ -138,6 +177,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        if not self._token_ok():
+            return self._json({"err": "unauthorized"}, 401)
+        if not self._same_origin():
+            return self._json({"err": "cross-origin rejected"}, 403)
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            # 只接受 JSON：HTML 表单无法伪造该 Content-Type，阻断简单 CSRF
+            return self._json({"err": "content-type must be application/json"}, 415)
         ln = int(self.headers.get("Content-Length") or 0)
         try:
             body = json.loads(self.rfile.read(ln) or b"{}")
@@ -162,6 +209,11 @@ class Handler(BaseHTTPRequestHandler):
 def serve(engine=None):
     global ENGINE
     ENGINE = engine
+    if not config.WEB_AUTH_TOKEN and config.WEB_HOST not in (
+            "127.0.0.1", "localhost", "::1"):
+        raise SystemExit(
+            "拒绝启动：WEB_HOST=%s 非回环地址时必须设置 WEB_AUTH_TOKEN" %
+            config.WEB_HOST)
     httpd = ThreadingHTTPServer((config.WEB_HOST, config.WEB_PORT), Handler)
     httpd.daemon_threads = True
     print("AI-WAF panel: http://%s:%d" % (config.WEB_HOST, config.WEB_PORT),

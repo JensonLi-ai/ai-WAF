@@ -22,8 +22,12 @@ SSL_VERIFY = False                # 雷池自签证书，原型阶段不校验�
 LLM_BASE = os.environ.get("LLM_BASE", "http://127.0.0.1:1234")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-14b")
 LLM_TIMEOUT = 300
+LLM_CALL_TIMEOUT = int(os.environ.get("LLM_CALL_TIMEOUT", "10"))  # 单次调用超时；超时自动关闭 grammar 重试一次
+LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))     # 并发研判数（建议 <= llama-server 槽位）
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))  # 输出上限：研判 JSON 足够，且防止 grammar 约束下生成失控
 LLM_TEMP = 0.1
+# Qwen3 thinking：关闭后更快，但会削弱表达式/编码类语义推理；默认保持开启
+LLM_DISABLE_THINKING = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"
 LLM_GRAMMAR = os.environ.get("LLM_GRAMMAR", "builtin")  # builtin=内置JSON grammar；空串=关闭；路径=自定义GBNF
 
 # ---- 运行模式（规则下发策略） ----
@@ -48,15 +52,23 @@ PROMOTE_THRESHOLD_HITS = 3           # 观察期命中次数阈值(转正参考)
 # 规则观察期结束、准备转正拦截前，先用"已知正常流量池"回放一遍正则；
 # 命中任意一条正常请求即判定会误杀，拒绝转正（回收该规则）。
 PROMOTE_GUARD_ENABLED = os.environ.get("PROMOTE_GUARD_ENABLED", "1") == "1"
-NORMAL_POOL_MIN = int(os.environ.get("NORMAL_POOL_MIN", "20"))     # 正常池至少 N 条才启用回放(太少无意义)
+NORMAL_POOL_MIN = int(os.environ.get("NORMAL_POOL_MIN", "20"))     # 正常池至少 N 条才允许转正（不足则 fail-closed）
 NORMAL_POOL_MAX = int(os.environ.get("NORMAL_POOL_MAX", "2000"))   # 正常池上限，超出淘汰最旧
+PROMOTE_REVIEW_MAX = int(os.environ.get("PROMOTE_REVIEW_MAX", "20"))  # 回放命中项 LLM 复核上限，防污染池拖慢转正
 
 # ---- 本地存储 ----
 DB_PATH = os.environ.get("AIWAF_DB", os.path.join(os.path.dirname(__file__), "aiwaf.db"))
 
+# ---- 研判结果缓存（相同 host+uri+payload 不重复调用 LLM） ----
+ANALYSIS_CACHE_ENABLED = os.environ.get("ANALYSIS_CACHE_ENABLED", "1") == "1"
+ANALYSIS_CACHE_TTL_DAYS = int(os.environ.get("ANALYSIS_CACHE_TTL_DAYS", "7"))
+
 # ---- Web 面板 ----
 WEB_HOST = os.environ.get("WEB_HOST", "127.0.0.1")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8899"))
+# 访问令牌：设置后所有 /api/*（除 /api/health）需携带 X-Auth-Token。
+# 未设置时仅允许绑定回环地址；绑非回环会拒绝启动，避免面板裸奔。
+WEB_AUTH_TOKEN = os.environ.get("WEB_AUTH_TOKEN", "")
 
 # ---- 默认策略：AI 规则强制绑定站点与 URI 前缀（防止规则无限匹配） ----
 DEFAULT_SITE_ID = os.environ.get("DEFAULT_SITE_ID", "")

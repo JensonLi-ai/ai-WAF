@@ -12,6 +12,8 @@ import json
 import re
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from urllib.parse import unquote
 
@@ -42,9 +44,19 @@ MISS_SUSPECT_RE = re.compile(
     r"\b(file|gopher|dict|ldap)://|127\.0\.0\.1|169\.254\.169\.254|"
     # 模板注入 (EL / SpEL / Thymeleaf / 通用 SSTI)
     r"\$\{[^}]+\}|\{\{[^{}]*\}\}|\#\{[^}]+\}|@\{[^}]+\}|"
-    r"__class__|__globals__|__subclasses__|"
+    r"__class__|__globals__|__subclasses__|jndi:|"
+    # 针对 AI 研判层的提示词注入
+    r"ignore\s+(all\s+)?(previous|prior)\s+instructions|"
+    r"忽略.{0,8}(指令|规则)|system\s*prompt|<\|im_start\|>|"
     # XML / XXE / Office 公式注入
-    r"<!ENTITY|<!DOCTYPE|<%[=#]?|O:\d+:"
+    r"<!ENTITY|<!DOCTYPE|<%[=#]?|O:\d+:|"
+    # NoSQL 注入
+    r"\[\$(?:ne|gt|gte|lt|lte|regex|where|exists|in|nin)\]|"
+    # CRLF 头注入（编码或裸回车换行后接敏感头）
+    r"%0d%0a(?:set-cookie|location|content-length)|"
+    r"\r\n(?:set-cookie|location|content-length)|"
+    # LDAP 注入
+    r"\*\)\(\w+=\*|\)\s*\(\s*\|\s*\("
 )
 
 
@@ -130,8 +142,17 @@ def _rule_matches(rule, sample):
     return (not sample) or bool(rx.search(sample))
 
 
+# ReDoS 启发式：嵌套量词 (a+)+ / (.*)* 是灾难性回溯的典型结构
+_NESTED_QUANT_RE = re.compile(r"\([^()]*[+*][^()]*\)[+*]")
+
+
+def _regex_risky(regex):
+    return bool(_NESTED_QUANT_RE.search(regex or ""))
+
+
 def _rule_usable(rule, sample):
-    return bool(rule) and _rule_matches(rule, sample) \
+    return bool(rule) and not _regex_risky(rule) \
+        and _rule_matches(rule, sample) \
         and _regex_specific_enough(rule)[0]
 
 
@@ -225,6 +246,17 @@ def _repair_rule(rule, sample):
     return None
 
 
+_INLINE_FLAGS_RE = re.compile(r"^\(\?([aiLmsux]+)\)")
+
+
+def _scope_inline_flags(regex):
+    """把开头的全局内联标志 (?i) 转成作用域形式 (?i:...)，避免拼接后编译失败。"""
+    m = _INLINE_FLAGS_RE.match(regex or "")
+    if not m:
+        return regex
+    return "(?%s:%s)" % (m.group(1), regex[m.end():])
+
+
 def _llm_anchor_rule(payload, anchors):
     """用模型逐字给出的攻击锚点拼规则，锚点必须原样出现在 payload 中。
 
@@ -290,6 +322,17 @@ def _literal_rule(row):
     esc = re.escape(payload)
     if len(esc) > 200:
         esc = esc[:200]
+        # 截断可能切在转义序列中间（末尾裸反斜杠），逐步回退到可编译
+        while esc:
+            cand = re.sub(r"\\+$", "", esc)
+            try:
+                re.compile(cand)
+                esc = cand
+                break
+            except re.error:
+                esc = esc[:-1]
+        if not esc:
+            return None
     if not _regex_specific_enough(esc)[0]:
         return None
     return esc
@@ -395,6 +438,44 @@ class Engine(threading.Thread):
         self.safeline = safeline
         self.llm = llm
         self._miss_seen = set()
+        self._miss_backlog = deque()
+        self._m_lock = threading.Lock()
+        self._latencies = deque(maxlen=500)
+        self._started = time.time()
+        self.metrics = {
+            "analysis_total": 0, "cache_hits": 0, "llm_calls": 0,
+            "llm_errors": 0, "timeouts": 0, "rules_created": 0,
+        }
+
+    def _metric(self, name, delta=1):
+        with self._m_lock:
+            self.metrics[name] = self.metrics.get(name, 0) + delta
+
+    def _record_latency(self, ms):
+        with self._m_lock:
+            self._latencies.append(ms)
+
+    def metrics_snapshot(self):
+        with self._m_lock:
+            lat = sorted(self._latencies)
+            m = dict(self.metrics)
+
+        def pct(p):
+            if not lat:
+                return 0
+            idx = min(len(lat) - 1, int(len(lat) * p))
+            return round(lat[idx])
+
+        m.update({
+            "uptime_sec": round(time.time() - self._started),
+            "latency_samples": len(lat),
+            "latency_p50_ms": pct(0.50),
+            "latency_p95_ms": pct(0.95),
+            "latency_p99_ms": pct(0.99),
+            "run_mode": config.RUN_MODE,
+            "llm_concurrency": config.LLM_CONCURRENCY,
+        })
+        return m
 
     # ---------------- 主循环 ----------------
 
@@ -443,8 +524,23 @@ class Engine(threading.Thread):
 
     def analyze_pending(self):
         rows = db.pending_analyses(MAX_ANALYZE_BATCH, config.ANALYZE_DELAY)
-        for row in rows:
+        if not rows:
+            return
+        workers = max(1, min(config.LLM_CONCURRENCY, len(rows)))
+        if workers <= 1:
+            for row in rows:
+                self._safe_analyze(row)
+            return
+        # 并发研判：llama-server 支持多槽位，串行是吞吐瓶颈
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="aiwaf-llm") as ex:
+            list(ex.map(self._safe_analyze, rows))
+
+    def _safe_analyze(self, row):
+        try:
             self._analyze_one(row)
+        except Exception as e:
+            log("analyze #%s error: %s" % (row.get("safeline_id"), e))
 
     def _analyze_one(self, row):
         # 拉取完整 payload（失败则退回台账列表字段）
@@ -459,7 +555,28 @@ class Engine(threading.Thread):
         ev.setdefault("host", row["host"])
         ev.setdefault("uri", row["uri"])
         ev.setdefault("attack_type", row["attack_type"])
-        a = self.llm.analyze(ev)
+        key = db.cache_key(ev.get("host") or row["host"],
+                           ev.get("uri") or row["uri"],
+                           ev.get("payload") or row.get("payload") or "")
+        t0 = time.perf_counter()
+        a = db.get_cached_analysis(key) if config.ANALYSIS_CACHE_ENABLED else None
+        if a:
+            self._metric("cache_hits")
+            log("cache hit #%s (saved LLM call)" % row["safeline_id"])
+        else:
+            self._metric("llm_calls")
+            a = self.llm.analyze(ev)
+            if a.get("_error"):
+                self._metric("llm_errors")
+                if "timeout" in (a.get("explain") or "").lower():
+                    self._metric("timeouts")
+            elif config.ANALYSIS_CACHE_ENABLED:
+                db.put_cached_analysis(
+                    key, ev.get("host") or row["host"],
+                    ev.get("uri") or row["uri"],
+                    ev.get("payload") or row.get("payload") or "", a)
+        self._metric("analysis_total")
+        self._record_latency((time.perf_counter() - t0) * 1000)
         db.save_analysis(row["id"], a)
         short = (row["attack_type"] or "?")[:24]
         log("analyze #%s [%s] -> %s (%.2f) %s" %
@@ -504,6 +621,7 @@ class Engine(threading.Thread):
             observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
             safeline_policy_id=policy_id, confidence=a["confidence"],
             source="ai-closed-loop", sample=sample)
+        self._metric("rules_created")
         log("rule created: %s (policy_id=%s) prefix=%s conf=%.2f" %
             (name, policy_id, prefix, a["confidence"]))
 
@@ -543,8 +661,20 @@ class Engine(threading.Thread):
         for line in lines:
             self._collect_normal(line)
         cands = self._extract_miss_candidates(lines)
-        for cand in cands[:config.MISS_MAX_BATCH]:
-            self._analyze_miss(cand)
+        # 超出单轮上限的候选进 backlog，下一轮继续处理，避免静默丢弃
+        self._miss_backlog.extend(cands)
+        backlog_cap = max(100, config.MISS_MAX_BATCH * 50)
+        while len(self._miss_backlog) > backlog_cap:
+            self._miss_backlog.popleft()
+        if cands and len(self._miss_backlog) > config.MISS_MAX_BATCH:
+            log("miss backlog: +%d, %d pending" %
+                (len(cands), len(self._miss_backlog)))
+        processed = 0
+        while self._miss_backlog and processed < config.MISS_MAX_BATCH:
+            self._analyze_miss(self._miss_backlog.popleft())
+            processed += 1
+        if len(self._miss_seen) > 50000:
+            self._miss_seen.clear()
 
     def _read_miss_log(self):
         """增量读取本地放行流量 JSONL（旁路记录后端写入）。"""
@@ -677,20 +807,43 @@ class Engine(threading.Thread):
                                last_hit=now, zero_hit_since=None)
                 log("rule %s +%d hits" % (rule["name"], hit))
 
-    def _regex_hits_normal(self, regex):
-        """回放正常流量池：正则命中任意一条正常请求即返回 True（会误杀）。"""
+    def _replay_normal(self, regex):
+        """回放正常流量池，返回 (status, hits)。
+
+        status:
+        - clean        未命中任何正常请求
+        - match        命中且复核确认为正常（不能转正）
+        - insufficient 正常池样本不足（fail-closed：不转正）
+        - invalid      正则无法编译（不转正）
+        - disabled     回放开关关闭（由调用方决定）
+        命中项先做 LLM 复核：若判定为攻击，说明正常池被绕过粗筛的攻击污染，
+        立即隔离该条，不让攻击者用污染样本压制规则。
+        """
         if not config.PROMOTE_GUARD_ENABLED:
-            return False
+            return "disabled", []
         if db.normal_pool_count() < config.NORMAL_POOL_MIN:
-            return False  # 池子样本太少，回放无意义，放行转正
+            return "insufficient", []
         try:
             rx = re.compile(regex)
         except re.error:
-            return False
+            return "invalid", []
+        hits = []
         for text in db.normal_pool_texts():
             if rx.search(text[:4096]):
-                return True
-        return False
+                hits.append(text)
+                if len(hits) >= config.PROMOTE_REVIEW_MAX:
+                    break
+        if not hits:
+            return "clean", []
+        for text in hits:
+            a = self.llm.analyze({"host": "", "uri": text, "payload": text})
+            if a["verdict"] == "attack" and not a.get("_error"):
+                db.remove_normal(text)
+                log("normal-pool quarantine: removed attack-looking entry")
+                continue
+            # LLM 错误时保守处理：视为正常命中，拒绝转正（fail-closed）
+            return "match", hits
+        return "clean", []
 
     def _promote_and_merge(self):
         rules = db.active_rules()
@@ -702,9 +855,15 @@ class Engine(threading.Thread):
             if not exp or exp > now:
                 continue
             if r["hits"] >= config.PROMOTE_THRESHOLD_HITS:
-                if self._regex_hits_normal(r["regex"]):
+                status, _hits = self._replay_normal(r["regex"])
+                if status == "match":
                     self._delete_rule(
                         r, "promote-guard: matches normal traffic")
+                    continue
+                if status in ("insufficient", "invalid"):
+                    # fail-closed：正常池不够或正则不可编译时保持观察期，不转正
+                    log("rule promotion deferred (%s): %s" %
+                        (status, r["name"]))
                     continue
                 if config.RUN_MODE == "human-review":
                     db.update_rule(r["id"], status="pending_review")
@@ -730,9 +889,15 @@ class Engine(threading.Thread):
             members.sort(key=lambda r: -r["hits"])
             leader = members[0]
             others = members[1:]
-            combined = "(?:" + "|".join(sorted(set(m["regex"] for m in members))) + ")"
+            scoped = set(_scope_inline_flags(m["regex"]) for m in members)
+            combined = "(?:" + "|".join(sorted(scoped)) + ")"
             if len(combined) > 512:
                 continue  # 合并后过大则保持独立
+            # 合并后的新正则必须重新回放，防止组合产生新的误杀面
+            status, _ = self._replay_normal(combined)
+            if status in ("match", "insufficient", "invalid"):
+                log("merge skipped (%s): %s/%s" % (status, host, prefix))
+                continue
             policies = {str(p.get("id")): p
                         for p in self.safeline.list_policies(page_size=100)}
             pol = policies.get(str(leader["safeline_policy_id"]))

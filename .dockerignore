@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+miss_traffic.jsonl
+bench_*.json
+results/
+.git/
+.vscode/
+.idea/
+aiwaf-intro/
+jsdump/

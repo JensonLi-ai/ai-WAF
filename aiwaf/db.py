@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS kv (
     v TEXT
 );
 
+CREATE TABLE IF NOT EXISTS analysis_cache (
+    dedup TEXT PRIMARY KEY,
+    host TEXT,
+    uri TEXT,
+    payload TEXT,
+    verdict TEXT NOT NULL,
+    confidence REAL NOT NULL DEFAULT 0,
+    variant TEXT,
+    suggested_rule TEXT,
+    rule_anchors TEXT,
+    explain TEXT,
+    model TEXT,
+    hits INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cache_last_seen ON analysis_cache(last_seen);
+
 CREATE TABLE IF NOT EXISTS normal_pool (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     dedup TEXT UNIQUE NOT NULL,
@@ -95,6 +113,7 @@ def _now():
 def get_conn():
     conn = sqlite3.connect(config.DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 
@@ -102,6 +121,9 @@ def init():
     with _lock:
         conn = get_conn()
         try:
+            # WAL 让引擎/采集器/面板多进程读写不再频繁互相阻塞
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(SCHEMA)
             _migrate(conn)
             conn.commit()
@@ -435,11 +457,112 @@ def normal_pool_texts(limit=0):
         conn.close()
 
 
+def remove_normal(text):
+    """从正常池移除一条（回放复核确认其为攻击时隔离）。"""
+    text = (text or "").strip()
+    if not text:
+        return False
+    dedup = hashlib.md5(text.encode("utf-8")).hexdigest()
+    with _lock:
+        conn = get_conn()
+        try:
+            cur = conn.execute("DELETE FROM normal_pool WHERE dedup=?", (dedup,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+
 def normal_pool_count():
     conn = get_conn()
     try:
         return conn.execute(
             "SELECT COUNT(*) c FROM normal_pool").fetchone()["c"]
+    finally:
+        conn.close()
+
+
+# ---------------- 研判结果缓存 ----------------
+
+def cache_key(host, uri, payload):
+    """相同 host+uri+payload 复用研判结论，避免重复攻击反复消耗 LLM。"""
+    raw = "%s|%s|%s" % (host or "", uri or "", payload or "")
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def get_cached_analysis(key):
+    """命中且未过期则返回研判结果 dict，否则 None（同时累计命中次数）。"""
+    with _lock:
+        conn = get_conn()
+        try:
+            row = conn.execute(
+                "SELECT * FROM analysis_cache WHERE dedup=? "
+                "AND last_seen>=datetime('now','localtime',?)",
+                (key, "-%d days" % config.ANALYSIS_CACHE_TTL_DAYS),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE analysis_cache SET hits=hits+1, "
+                "last_seen=datetime('now','localtime') WHERE dedup=?", (key,))
+            conn.commit()
+            anchors = []
+            try:
+                anchors = json.loads(row["rule_anchors"] or "[]")
+            except (ValueError, TypeError):
+                pass
+            return {
+                "verdict": row["verdict"],
+                "confidence": row["confidence"],
+                "variant": row["variant"],
+                "suggested_rule": row["suggested_rule"],
+                "rule_anchors": anchors,
+                "explain": row["explain"],
+                "model": row["model"],
+                "_cached": True,
+            }
+        finally:
+            conn.close()
+
+
+def put_cached_analysis(key, host, uri, payload, a):
+    """写入/刷新研判缓存（只缓存非错误结果）。"""
+    if a.get("_error"):
+        return
+    with _lock:
+        conn = get_conn()
+        try:
+            conn.execute(
+                "INSERT INTO analysis_cache"
+                "(dedup, host, uri, payload, verdict, confidence, variant,"
+                " suggested_rule, rule_anchors, explain, model, hits,"
+                " created_at, last_seen) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,0,datetime('now','localtime'),"
+                "datetime('now','localtime')) "
+                "ON CONFLICT(dedup) DO UPDATE SET verdict=excluded.verdict,"
+                "confidence=excluded.confidence,variant=excluded.variant,"
+                "suggested_rule=excluded.suggested_rule,"
+                "rule_anchors=excluded.rule_anchors,explain=excluded.explain,"
+                "model=excluded.model,last_seen=excluded.last_seen",
+                (key, host or "", uri or "", (payload or "")[:4000],
+                 a.get("verdict", "unknown"), float(a.get("confidence") or 0.0),
+                 a.get("variant"),
+                 a.get("suggested_rule"),
+                 json.dumps(a.get("rule_anchors") or [], ensure_ascii=False),
+                 a.get("explain"), a.get("model")),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def cache_stats():
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(hits),0) h FROM analysis_cache"
+        ).fetchone()
+        return {"cache_entries": row["n"], "cache_hits": row["h"]}
     finally:
         conn.close()
 
@@ -464,7 +587,7 @@ def stats():
             "SELECT COUNT(*) c FROM rules WHERE status='recycled'").fetchone()["c"]
         hits = conn.execute(
             "SELECT COALESCE(SUM(hits),0) c FROM rules").fetchone()["c"]
-        return {
+        out = {
             "total_events": total,
             "analyzed": analyzed,
             "attack_verdicts": attacks,
@@ -473,5 +596,7 @@ def stats():
             "rules_recycled": recycled,
             "rules_hits": hits,
         }
+        out.update(cache_stats())
+        return out
     finally:
         conn.close()

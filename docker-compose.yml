@@ -1,0 +1,26 @@
+services:
+  aiwaf:
+    build: .
+    ports:
+      - "8899:8899"   # Web 面板 / API
+      - "8088:8088"   # 旁路采集器（雷池后端指向此端口）
+    environment:
+      SAFELINE_BASE: ${SAFELINE_BASE:-https://host.docker.internal:9443}
+      SAFELINE_AUTH_MODE: ${SAFELINE_AUTH_MODE:-openapi}
+      SAFELINE_OPENAPI_TOKEN: ${SAFELINE_OPENAPI_TOKEN:-}
+      SAFELINE_TOKEN: ${SAFELINE_TOKEN:-}
+      LLM_BASE: ${LLM_BASE:-http://host.docker.internal:1234}
+      LLM_CONCURRENCY: ${LLM_CONCURRENCY:-2}
+      RUN_MODE: ${RUN_MODE:-human-review}
+      DEFAULT_SITE_ID: ${DEFAULT_SITE_ID:-}
+      # 面板监听 0.0.0.0，必须设置访问令牌，否则拒绝启动
+      WEB_AUTH_TOKEN: ${WEB_AUTH_TOKEN:?请设置 WEB_AUTH_TOKEN 后再启动}
+      ANALYSIS_CACHE_ENABLED: ${ANALYSIS_CACHE_ENABLED:-1}
+    volumes:
+      - aiwaf-data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  aiwaf-data:
