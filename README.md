@@ -1,5 +1,6 @@
 # AI-WAF 智能 Web 应用防火墙
 
+[![CI](https://github.com/JensonLi-ai/ai-WAF/actions/workflows/ci.yml/badge.svg)](https://github.com/JensonLi-ai/ai-WAF/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![LLM](https://img.shields.io/badge/LLM-Qwen3--14B-teal.svg)](https://github.com/QwenLM/Qwen3)
@@ -13,6 +14,16 @@
 一个把「本地大模型」接入开源 WAF 的**闭环防护系统**——不仅拦截已知攻击，还能**自动发现并补上规则没见过的变形攻击**。
 
 > ⚠️ 本项目仅供合法的授权安全测试与学习研究使用。请勿用于任何未授权的攻击行为。
+
+### English Summary
+
+AI-WAF is a closed-loop Web Application Firewall that puts a **local LLM** (Qwen3-14B) behind SafeLine:
+
+- **On-prem by design** — traffic and payloads never leave your server.
+- **Two-stage defense** — SafeLine blocks known signatures in milliseconds; the LLM reviews only bypass traffic asynchronously.
+- **Self-healing rules** — the model extracts verbatim attack anchors from payloads, the engine assembles and validates regexes, rules enter an observation period, are replayed against normal traffic, then promoted automatically.
+- **Fail-closed safety** — insufficient replay pool means *no promotion*; polluted normal-pool entries are re-checked by the LLM and quarantined; panel APIs require a token and JSON-only POSTs.
+- **Measured, not claimed** — `93` attack samples across `12` categories + `32` false-positive traps. SafeLine-only recall **62%**, AI adds **+36.6 pp** for **99%** overall, **0/32** false positives. Raw run: [`docs/eval-v2.json`](docs/eval-v2.json).
 
 ---
 
@@ -203,6 +214,8 @@ tests/test_engine.py  # 核心安全逻辑单元测试
 | 正常样本误报率 | 0%（0/32） | 生产另有粗筛/置信度/特指性/回放四道闸门 |
 
 > 规则来源已分账：模型/修复 61 条、锚点 29 条、字面兜底 1 条、通用锚点 1 条——可以直接看出各层贡献，而不是混在一个"拦截率"里。
+
+> 原始评测结果（JSON，含全部分类/规则来源/第一线明细）：[`docs/eval-v2.json`](docs/eval-v2.json)。
 
 > v2 难度显著高于 v1（v1：49+22 条、检出/端到端 100%、误报 0/22），指标回落是预期结果，也更接近真实场景。偶发 1/93 超时（10s 超时后关 grammar 重试仍超时）会表现为漏检；若该样本已被第一线覆盖，整体指标不受影响。
 

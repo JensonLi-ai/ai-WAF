@@ -1,0 +1,102 @@
+{
+  "model": "qwen3-14b",
+  "attack": {
+    "total": 93,
+    "detected": 93,
+    "rate": 100.0,
+    "avg_ms": 2290,
+    "avg_conf": 0.975,
+    "rule_gen": 93,
+    "rule_raw_valid": 56,
+    "rule_valid": 90,
+    "rule_repaired": 5,
+    "rule_anchor_valid": 29,
+    "e2e_intercepted": 92,
+    "e2e_rate": 98.9,
+    "firstline_blocked": 58,
+    "firstline_detail": {
+      "sqli": 9,
+      "xss": 8,
+      "cmdi": 11,
+      "traversal": 4,
+      "ssrf": 10,
+      "ssti": 9,
+      "xxe": 2,
+      "deser": 5
+    },
+    "ai_candidates": 35,
+    "ai_detected": 35,
+    "ai_intercepted": 34,
+    "ai_contribution": 97.1,
+    "overall_intercepted": 92,
+    "overall_rate": 98.9,
+    "safeline_only_rate": 62.4,
+    "ai_increment_pp": 36.6,
+    "rule_sources": {
+      "model": 61,
+      "anchor": 29,
+      "literal": 1,
+      "generic-anchor": 1
+    },
+    "screened": 67,
+    "per_cat": {
+      "sqli": {
+        "total": 16,
+        "detected": 16
+      },
+      "xss": {
+        "total": 13,
+        "detected": 13
+      },
+      "cmdi": {
+        "total": 14,
+        "detected": 14
+      },
+      "traversal": {
+        "total": 10,
+        "detected": 10
+      },
+      "ssrf": {
+        "total": 10,
+        "detected": 10
+      },
+      "ssti": {
+        "total": 12,
+        "detected": 12
+      },
+      "xxe": {
+        "total": 6,
+        "detected": 6
+      },
+      "deser": {
+        "total": 6,
+        "detected": 6
+      },
+      "nosql": {
+        "total": 2,
+        "detected": 2
+      },
+      "crlf": {
+        "total": 2,
+        "detected": 2
+      },
+      "ldap": {
+        "total": 1,
+        "detected": 1
+      },
+      "jndi": {
+        "total": 1,
+        "detected": 1
+      }
+    },
+    "missed": []
+  },
+  "normal": {
+    "total": 32,
+    "false_pos": 0,
+    "rate": 0.0,
+    "screened": 1,
+    "screened_fp": 0,
+    "fp": []
+  }
+}
