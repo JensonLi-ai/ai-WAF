@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="380" viewBox="0 0 920 380" role="img" aria-label="AI-WAF v2 evaluation results">
+  <rect width="920" height="380" fill="#0b1220"/>
+  <text x="32" y="44" fill="#dbe6ff" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="700">AI-WAF v2 Evaluation</text>
+  <text x="32" y="70" fill="#7e92b8" font-family="Consolas, monospace" font-size="13">93 attack samples / 12 categories · 32 normal samples · Qwen3-14B local</text>
+
+  <!-- SafeLine only -->
+  <text x="32" y="124" fill="#dbe6ff" font-family="Segoe UI, Arial, sans-serif" font-size="14">SafeLine only</text>
+  <rect x="200" y="108" width="620" height="24" rx="4" fill="#16213a"/>
+  <rect x="200" y="108" width="386" height="24" rx="4" fill="#4da3ff"/>
+  <text x="596" y="126" fill="#dbe6ff" font-family="Consolas, monospace" font-size="14">62.4%</text>
+
+  <!-- AI-WAF overall -->
+  <text x="32" y="180" fill="#dbe6ff" font-family="Segoe UI, Arial, sans-serif" font-size="14">AI-WAF overall</text>
+  <rect x="200" y="164" width="620" height="24" rx="4" fill="#16213a"/>
+  <rect x="200" y="164" width="612" height="24" rx="4" fill="#35d07f"/>
+  <text x="788" y="182" fill="#dbe6ff" font-family="Consolas, monospace" font-size="14">98.9%</text>
+  <text x="200" y="208" fill="#35d07f" font-family="Consolas, monospace" font-size="12">AI increment +36.6 pp</text>
+
+  <!-- False positives -->
+  <text x="32" y="252" fill="#dbe6ff" font-family="Segoe UI, Arial, sans-serif" font-size="14">False positives</text>
+  <rect x="200" y="236" width="620" height="24" rx="4" fill="#16213a"/>
+  <rect x="200" y="236" width="8" height="24" rx="4" fill="#ff5c6c"/>
+  <text x="220" y="254" fill="#dbe6ff" font-family="Consolas, monospace" font-size="14">0 / 32</text>
+
+  <!-- Divider -->
+  <line x1="32" y1="288" x2="888" y2="288" stroke="#22304d"/>
+
+  <!-- Rule sources -->
+  <text x="32" y="318" fill="#7e92b8" font-family="Segoe UI, Arial, sans-serif" font-size="13">Rule sources</text>
+  <rect x="200" y="304" width="440" height="18" rx="3" fill="#4da3ff"/>
+  <rect x="640" y="304" width="209" height="18" rx="3" fill="#35d07f"/>
+  <rect x="849" y="304" width="7" height="18" fill="#f5b942"/>
+  <rect x="856" y="304" width="7" height="18" fill="#7e92b8"/>
+  <text x="200" y="344" fill="#dbe6ff" font-family="Consolas, monospace" font-size="12">model / repaired 61</text>
+  <text x="420" y="344" fill="#dbe6ff" font-family="Consolas, monospace" font-size="12">anchors 29</text>
+  <text x="560" y="344" fill="#dbe6ff" font-family="Consolas, monospace" font-size="12">literal 1</text>
+  <text x="660" y="344" fill="#dbe6ff" font-family="Consolas, monospace" font-size="12">generic 1</text>
+  <text x="760" y="344" fill="#7e92b8" font-family="Segoe UI, Arial, sans-serif" font-size="12">of 93 attacks</text>
+</svg>
