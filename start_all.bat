@@ -81,7 +81,6 @@ if not exist "%PWD_FILE%" (
 
 echo [7/7] 启动闭环引擎与面板 ...
 set "SAFELINE_AUTH_MODE=jwt"
-set "PYTHONIOENCODING=gbk"
 set "AIWAF_WSL_IP=%WSL_IP%"
 set "RUN_MODE=auto"
 set "WEB_PORT=8899"
