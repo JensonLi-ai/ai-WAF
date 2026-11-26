@@ -9,7 +9,7 @@ import unittest
 
 from aiwaf import config, db
 from aiwaf.engine import (Engine, _anchor_rule, _literal_rule, _llm_anchor_rule,
-                          _regex_risky, _regex_specific_enough,
+                          _regex_risky, _regex_specific_enough, _resolve_rule,
                           _scope_inline_flags)
 from aiwaf.llm_client import LlmClient
 
@@ -57,6 +57,30 @@ class TestRuleBuilding(unittest.TestCase):
     def test_short_payload_anchor_fallback(self):
         self.assertEqual(_anchor_rule("|id"), r"\|\s*id")
         self.assertEqual(_anchor_rule(";whoami"), r";\s*whoami")
+
+    def test_short_sleep_payload_gets_rule(self):
+        rule = _anchor_rule("1;sleep(10)")
+        self.assertIsNotNone(rule)
+        self.assertTrue(re.search(rule, "1;sleep(10)"))
+        self.assertIsNone(_anchor_rule("hello;world"))
+
+    def test_sql_time_based_anchor(self):
+        rule = _anchor_rule("1 AND sleep(5)")
+        self.assertIsNotNone(rule)
+        self.assertTrue(re.search(rule, "1 AND sleep(5)"))
+
+    def test_waitfor_preferred_over_comment(self):
+        rule = _anchor_rule("';WAITFOR DELAY '0:0:5'--")
+        self.assertIn("waitfor", rule.lower())
+
+    def test_resolve_rule_falls_back_for_short_payload(self):
+        row = {"host": "demo.test", "uri": "/?q=1;sleep(10)",
+               "payload": "1;sleep(10)"}
+        a = {"verdict": "attack", "confidence": 0.98, "variant": "cmdi",
+             "rule_anchors": [], "suggested_rule": r"\bsleep\s*\("}
+        rule = _resolve_rule(row, a, "/?q=1;sleep(10) 1;sleep(10)")
+        self.assertIsNotNone(rule)
+        self.assertTrue(re.search(rule, "1;sleep(10)"))
 
 
 class TestReplayFailClosed(unittest.TestCase):

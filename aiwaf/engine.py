@@ -342,6 +342,8 @@ _CMDI_CMDS = (
     "id", "whoami", "cat", "ls", "pwd", "sh", "bash", "uname",
     "ifconfig", "ipconfig", "net", "ping", "wget", "curl", "nc",
     "nslookup", "dir", "type", "systeminfo", "hostname",
+    "powershell", "python", "python3", "perl", "rm", "chmod", "chown",
+    "kill", "tasklist", "certutil", "bitsadmin", "regsvr32", "mshta",
 )
 
 
@@ -373,6 +375,23 @@ def _anchor_rule(payload):
     m = re.search(r';\s*([A-Za-z0-9_./-]{1,32})', p)
     if m and m.group(1).lower() in _CMDI_CMDS:
         return r';\s*' + re.escape(m.group(1))
+    # 命令/SQL 注入：分号或管道 + 延时函数（如 1;sleep(10)）
+    m = re.search(r'[;|]\s*(sleep|benchmark|pg_sleep)\s*\(', p, re.I)
+    if m:
+        return r'(?i)[;|]\s*' + m.group(1).lower() + r'\s*\('
+    # 命令注入：分号 + sleep/ping + 秒数（如 1;sleep 10）
+    m = re.search(r'[;|]\s*(sleep|ping)\s+\d{1,3}\b', p, re.I)
+    if m:
+        return r'(?i)[;|]\s*' + m.group(1).lower() + r'\s+\d{1,3}\b'
+    # SQL：and/or + 延时函数（时间盲注）
+    m = re.search(r'\b(and|or)\s+(sleep|benchmark|pg_sleep)\s*\(', p, re.I)
+    if m:
+        return r'(?i)\b(and|or)\s+' + m.group(2).lower() + r'\s*\('
+    # SQL Server：WAITFOR DELAY / xp_cmdshell（优先于引号+注释的宽规则）
+    if re.search(r'\bwaitfor\s+delay\b', p, re.I):
+        return r'(?i)\bwaitfor\s+delay\b'
+    if re.search(r'\bxp_cmdshell\b', p, re.I):
+        return r'(?i)\bxp_cmdshell\b'
     # SQL：引号闭合 + or/and
     m = re.search(r"'\s*(or|and)\b", p, re.I)
     if m:
