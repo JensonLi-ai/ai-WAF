@@ -257,6 +257,19 @@ def _scope_inline_flags(regex):
     return "(?%s:%s)" % (m.group(1), regex[m.end():])
 
 
+def _scoped_uri_regex(prefix, regex):
+    """把 URI 前缀拼进雷池的 uri 条件，确保规则只在该路径下生效。
+
+    前缀后必须是 '/'、'?' 或结尾，避免 /train 误匹配 /training；
+    根路径 '/' 视为全站，不额外加限制。
+    """
+    scoped = _scope_inline_flags(regex or "")
+    prefix = (prefix or "/").rstrip("/")
+    if not prefix:
+        return scoped
+    return r"^%s(?:[/?]|$).*(?:%s)" % (re.escape(prefix), scoped)
+
+
 def _llm_anchor_rule(payload, anchors):
     """用模型逐字给出的攻击锚点拼规则，锚点必须原样出现在 payload 中。
 
@@ -405,25 +418,35 @@ def _anchor_rule(payload):
     return None
 
 
-def _resolve_rule(row, a, sample):
-    """优先用模型生成的正则（可编译+命中样本+特指性三关），无效则退回字面规则，
-    字面规则特指性不足时再做锚点提取。
+def _resolve_rule_ex(row, a, sample):
+    """返回 (regex, source)，source ∈ model / anchor / literal / syntax。
 
-    目标：模型判对（verdict=attack）时尽量有规则可落地，避免「判得出但拦不住」。
+    规则内容优先由 LLM 产出：模型正则 -> LLM 逐字锚点 -> payload 字面兜底；
+    最后才是确定性语法锚点（可用 ALLOW_SYNTAX_FALLBACK=0 关闭）。
     """
     candidate = (a.get("suggested_rule") or "").strip()
     if len(candidate) <= 512:
         repaired = _repair_rule(candidate, sample)
         if repaired:
-            return repaired
+            return repaired, "model"
     anchored = _llm_anchor_rule(row.get("payload") or sample,
                                 a.get("rule_anchors") or [])
     if anchored:
-        return anchored
+        return anchored, "anchor"
     literal = _literal_rule(row)
     if literal:
-        return literal
-    return _anchor_rule(row.get("payload") or "")
+        return literal, "literal"
+    if not config.ALLOW_SYNTAX_FALLBACK:
+        return None, None
+    syntax = _anchor_rule(row.get("payload") or "")
+    if syntax:
+        return syntax, "syntax"
+    return None, None
+
+
+def _resolve_rule(row, a, sample):
+    """兼容旧调用：只返回正则（来源统计用 _resolve_rule_ex）。"""
+    return _resolve_rule_ex(row, a, sample)[0]
 
 
 def _parse_ts(s, default=None):
@@ -615,9 +638,11 @@ class Engine(threading.Thread):
     def _maybe_create_rule(self, row, a):
         sample = ("%s %s" % (row.get("uri") or "",
                              row.get("payload") or "")).strip()
-        regex = _resolve_rule(row, a, sample)
+        regex, regex_source = _resolve_rule_ex(row, a, sample)
         if regex is None:
-            log("skip rule: no valid regex (model + literal fallback both failed)")
+            log("skip rule: no valid regex (LLM rule/anchor + fallback failed, "
+                "syntax_fallback=%s)" %
+                ("on" if config.ALLOW_SYNTAX_FALLBACK else "off"))
             return
         host = row["host"] or None
         site_id = config.DEFAULT_SITE_ID or None
@@ -634,7 +659,8 @@ class Engine(threading.Thread):
             _slug(a.get("variant")),
             hashlib.md5((regex + "|" + scope).encode()).hexdigest()[:8])
         conditions = self.safeline.build_conditions(
-            uri_regex=regex, host=host, site_id=site_id)
+            uri_regex=_scoped_uri_regex(prefix, regex),
+            host=host, site_id=site_id)
         policy_id = self._create_policy_with_site_op_fallback(name, conditions)
         if policy_id is None:
             return
@@ -643,10 +669,11 @@ class Engine(threading.Thread):
             uri_prefix=prefix,
             observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
             safeline_policy_id=policy_id, confidence=a["confidence"],
-            source="ai-closed-loop", sample=sample)
+            source="ai-closed-loop", regex_source=regex_source,
+            sample=sample)
         self._metric("rules_created")
-        log("rule created: %s (policy_id=%s) prefix=%s conf=%.2f" %
-            (name, policy_id, prefix, a["confidence"]))
+        log("rule created: %s (policy_id=%s) prefix=%s source=%s conf=%.2f" %
+            (name, policy_id, prefix, regex_source, a["confidence"]))
 
     def _create_policy_with_site_op_fallback(self, name, conditions):
         """站点条件 op 不确定时先 in 后 eq，兼容两种后端写法。
@@ -914,7 +941,8 @@ class Engine(threading.Thread):
             if not exp or exp > now:
                 continue
             if r["hits"] >= config.PROMOTE_THRESHOLD_HITS:
-                status, _hits = self._replay_normal(r["regex"])
+                status, _hits = self._replay_normal(
+                    _scoped_uri_regex(r["uri_prefix"], r["regex"]))
                 if status == "match":
                     self._delete_rule(
                         r, "promote-guard: matches normal traffic")
@@ -950,10 +978,11 @@ class Engine(threading.Thread):
             others = members[1:]
             scoped = set(_scope_inline_flags(m["regex"]) for m in members)
             combined = "(?:" + "|".join(sorted(scoped)) + ")"
-            if len(combined) > 512:
+            combined_uri = _scoped_uri_regex(prefix, combined)
+            if len(combined_uri) > 512:
                 continue  # 合并后过大则保持独立
             # 合并后的新正则必须重新回放，防止组合产生新的误杀面
-            status, _ = self._replay_normal(combined)
+            status, _ = self._replay_normal(combined_uri)
             if status in ("match", "insufficient", "invalid"):
                 log("merge skipped (%s): %s/%s" % (status, host, prefix))
                 continue
@@ -966,7 +995,7 @@ class Engine(threading.Thread):
                 for group in (pol.get("pattern") or []):
                     for cond in (group or []):
                         if cond.get("k") == "uri":
-                            cond["v"] = [combined]
+                            cond["v"] = [combined_uri]
                             break
                 pol["name"] = "AI-merged-%s" % hashlib.md5(
                     (host + prefix).encode()).hexdigest()[:8]

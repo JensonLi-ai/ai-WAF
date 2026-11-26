@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS rules (
     merged_into INTEGER,
     confidence REAL NOT NULL DEFAULT 0,
     source TEXT NOT NULL DEFAULT 'ai-closed-loop',
+    regex_source TEXT NOT NULL DEFAULT '',
     sample TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -139,6 +140,9 @@ def _migrate(conn):
             "ALTER TABLE rules ADD COLUMN source TEXT NOT NULL DEFAULT 'ai-closed-loop'")
     if "sample" not in cols:
         conn.execute("ALTER TABLE rules ADD COLUMN sample TEXT NOT NULL DEFAULT ''")
+    if "regex_source" not in cols:
+        conn.execute(
+            "ALTER TABLE rules ADD COLUMN regex_source TEXT NOT NULL DEFAULT ''")
 
 
 # ---------------- kv ----------------
@@ -309,7 +313,8 @@ def events_payloads_since(event_id, limit=5000):
 # ---------------- rules ----------------
 
 def add_rule(name, regex, site_id, host, uri_prefix, observed_until,
-             safeline_policy_id, confidence, source="ai-closed-loop", sample=""):
+             safeline_policy_id, confidence, source="ai-closed-loop",
+             regex_source="", sample=""):
     with _lock:
         conn = get_conn()
         try:
@@ -317,11 +322,11 @@ def add_rule(name, regex, site_id, host, uri_prefix, observed_until,
                 "INSERT INTO rules"
                 "(name, regex, site_id, host, uri_prefix, status,"
                 " observed_until, safeline_policy_id, confidence, source,"
-                " sample, created_at, updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " regex_source, sample, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (name, regex, site_id, host, uri_prefix, "observing",
                  observed_until, safeline_policy_id, confidence, source,
-                 sample, _now(), _now()),
+                 regex_source, sample, _now(), _now()),
             )
             conn.commit()
             return cur.lastrowid
@@ -597,6 +602,9 @@ def stats():
             "SELECT COUNT(*) c FROM rules WHERE status='recycled'").fetchone()["c"]
         hits = conn.execute(
             "SELECT COALESCE(SUM(hits),0) c FROM rules").fetchone()["c"]
+        by_source = {r["regex_source"] or "unknown": r["c"] for r in
+                     conn.execute("SELECT regex_source, COUNT(*) c FROM rules "
+                                  "GROUP BY regex_source")}
         out = {
             "total_events": total,
             "analyzed": analyzed,
@@ -605,6 +613,7 @@ def stats():
             "rules_promoted": promoted,
             "rules_recycled": recycled,
             "rules_hits": hits,
+            "rules_by_source": by_source,
         }
         out.update(cache_stats())
         return out

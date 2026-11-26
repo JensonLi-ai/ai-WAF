@@ -53,8 +53,8 @@ footer{color:var(--dim);padding:10px 26px 30px;font-size:12px}
 <section><h2>AI 规则库（生命周期：观察期→转正→回收，上限 300）
 <button onclick="rollback()" style="float:right;font-size:12px;padding:4px 10px;background:#ff5c6c;color:#fff;border:0;border-radius:6px;cursor:pointer">批量禁用 AI 规则</button></h2>
 <table><thead><tr><th>ID</th><th>名称</th><th>正则</th><th>状态</th><th>命中</th>
-<th>置信度</th><th>作用域</th><th>到期</th><th>雷池ID</th><th>操作</th></tr></thead>
-<tbody id="rules"><tr><td colspan="10">加载中…</td></tr></tbody></table></section>
+<th>置信度</th><th>来源</th><th>作用域</th><th>到期</th><th>雷池ID</th><th>操作</th></tr></thead>
+<tbody id="rules"><tr><td colspan="11">加载中…</td></tr></tbody></table></section>
 <section><h2>攻击事件与 AI 研判</h2>
 <table><thead><tr><th>#</th><th>时间</th><th>源IP</th><th>域名</th><th>URI</th>
 <th>类型</th><th>研判</th><th>置信度</th><th>解释</th></tr></thead>
@@ -85,7 +85,8 @@ async function load(){
   const cards=[['事件总数',st.total_events],['已研判',st.analyzed],
    ['攻击判定',st.attack_verdicts],['观察期规则',st.rules_observing],
    ['已转正规则',st.rules_promoted],['已回收',st.rules_recycled],
-   ['规则累计命中',st.rules_hits],['缓存命中',st.cache_hits||0]];
+   ['规则累计命中',st.rules_hits],['模型生成规则',(st.rules_by_source||{}).model||0],
+   ['缓存命中',st.cache_hits||0]];
   document.getElementById('cards').innerHTML=cards.map(([n,v])=>
    `<div class="card"><b>${esc(v)}</b><span>${esc(n)}</span></div>`).join('');
   document.getElementById('rules').innerHTML=(rl.length?rl.map(r=>
@@ -93,11 +94,12 @@ async function load(){
    <td class="regex">${esc(r.regex)}</td>
    <td class="s-${esc(r.status)}">${esc(r.status)}</td>
    <td>${r.hits}</td><td>${(+r.confidence).toFixed(2)}</td>
+   <td class="mono">${esc(r.regex_source||'-')}</td>
    <td class="mono">${esc(r.uri_prefix||'-')} @ ${esc(r.host||r.site_id||'-')}</td>
    <td class="mono">${esc(r.observed_until||'')}</td>
    <td>${r.safeline_policy_id??''}</td>
    <td>${r.status==='pending_review'?`<button onclick="approve(${r.id})">批准</button>`:''}</td></tr>`).join('')
-  :`<tr><td colspan="10">暂无 AI 规则</td></tr>`);
+  :`<tr><td colspan="11">暂无 AI 规则</td></tr>`);
   document.getElementById('events').innerHTML=(ev.length?ev.map(e=>
    `<tr><td>${e.safeline_id}</td><td class="mono">${esc(e.ts)}</td>
    <td class="mono">${esc(e.src_ip)}</td><td>${esc(e.host)}</td>

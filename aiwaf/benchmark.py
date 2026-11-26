@@ -21,9 +21,9 @@ import re
 import time
 
 from . import config
-from .engine import (MISS_SUSPECT_RE, _anchor_rule, _fix_broken_regex,
-                     _literal_rule, _llm_anchor_rule, _repair_rule,
-                     _resolve_rule, _regex_risky, _regex_specific_enough)
+from .engine import (MISS_SUSPECT_RE, _fix_broken_regex, _llm_anchor_rule,
+                     _repair_rule, _resolve_rule_ex, _regex_risky,
+                     _regex_specific_enough)
 from .llm_client import LlmClient
 
 # 外部语料由 tools/build_external_corpus.py 生成
@@ -319,7 +319,7 @@ def run(category=None, limit=None, quiet=False, dataset="v2", external_path=None
     ai_candidates = 0
     ai_detected = 0
     ai_intercepted = 0
-    rule_sources = {"model": 0, "anchor": 0, "literal": 0, "generic-anchor": 0}
+    rule_sources = {"model": 0, "anchor": 0, "literal": 0, "syntax": 0}
     total = len(atk)
     print("== 攻击样本 %d 条 ==" % total, flush=True)
     for i, (cat, name, payload) in enumerate(atk, 1):
@@ -348,22 +348,14 @@ def run(category=None, limit=None, quiet=False, dataset="v2", external_path=None
         resolved = None
         if hit:
             # 端到端拦截：检出 且 有可落地规则（模型正则优先，失败则字面兜底）
-            resolved = _resolve_rule({"payload": payload}, a, sample=payload)
+            resolved, src = _resolve_rule_ex(
+                {"payload": payload}, a, sample=payload)
             if resolved:
                 e2e_intercepted += 1
                 if not fl:
                     ai_intercepted += 1
-                if _repair_rule(a.get("suggested_rule"), payload):
-                    src = "model"
-                elif _llm_anchor_rule(payload, a.get("rule_anchors") or []):
-                    src = "anchor"
-                elif _literal_rule({"payload": payload}):
-                    src = "literal"
-                elif _anchor_rule(payload):
-                    src = "generic-anchor"
-                else:
-                    src = "other"
-                rule_sources[src] = rule_sources.get(src, 0) + 1
+                rule_sources[src or "other"] = \
+                    rule_sources.get(src or "other", 0) + 1
         if hit and (a.get("suggested_rule") or a.get("rule_anchors")):
             rule_gen += 1
             ok, why = False, "empty"
@@ -420,9 +412,9 @@ def run(category=None, limit=None, quiet=False, dataset="v2", external_path=None
     overall = firstline_blocked + ai_intercepted
     print("整体端到端: %d/%d = %.0f%%（第一线拦截 + AI 补漏）" %
           (overall, total, 100.0 * overall / total if total else 0))
-    print("规则来源: 模型/修复 %d，锚点 %d，字面兜底 %d，通用锚点 %d" %
+    print("规则来源: 模型/修复 %d，锚点 %d，字面兜底 %d，语法兜底 %d" %
           (rule_sources.get("model", 0), rule_sources.get("anchor", 0),
-           rule_sources.get("literal", 0), rule_sources.get("generic-anchor", 0)))
+           rule_sources.get("literal", 0), rule_sources.get("syntax", 0)))
     safeline_rate = 100.0 * firstline_blocked / total if total else 0
     overall_rate = 100.0 * overall / total if total else 0
     print("SafeLine-only 检出: %d/%d = %.0f%%；AI 增量: +%d 条 (+%.1f pp)" %

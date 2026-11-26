@@ -292,6 +292,25 @@ set RUN_MODE=human-review && python -m aiwaf.main
 
 > 面板默认只监听 `127.0.0.1`。需要远程访问（或容器部署）时必须设置 `WEB_AUTH_TOKEN`，否则服务拒绝在非回环地址启动；浏览器首次访问会提示输入令牌。
 
+### 规则来源与语法兜底
+
+每条规则会记录正则的实际来源（面板「来源」列、`/api/stats` 的 `rules_by_source`）：
+
+| 来源 | 含义 |
+|---|---|
+| `model` | LLM 直接生成的正则（经编译/命中/特指性校验） |
+| `anchor` | LLM 给出的逐字攻击锚点，由引擎拼成正则 |
+| `literal` | payload 字面兜底 |
+| `syntax` | 确定性语法锚点兜底（如 `;sleep(`、`WAITFOR DELAY`） |
+
+若要求“规则必须由 LLM 产出”，可关闭语法兜底：
+
+```bash
+ALLOW_SYNTAX_FALLBACK=0 python -m aiwaf.main
+```
+
+关闭后模型判对但写不出规则的事件会被跳过并记录日志（`syntax_fallback=off`），不会下发硬编码模板。
+
 ## 性能与可观测
 
 面向"整体可用"的工程化能力：

@@ -50,6 +50,10 @@ MAX_RULES = 300                      # 自定义规则硬上限
 MIN_CONFIDENCE = 0.85                # 低于此置信度不生成规则
 PROMOTE_THRESHOLD_HITS = 3           # 观察期命中次数阈值(转正参考)
 
+# 是否允许确定性语法锚点兜底（_anchor_rule）：
+# 0 = 只接受 LLM 生成的正则 / LLM 逐字锚点 / 字面兜底；仍写不出规则则跳过。
+ALLOW_SYNTAX_FALLBACK = os.environ.get("ALLOW_SYNTAX_FALLBACK", "1") == "1"
+
 # ---- 转正前零误杀回放（防误杀最后闸门） ----
 # 规则观察期结束、准备转正拦截前，先用"已知正常流量池"回放一遍正则；
 # 命中任意一条正常请求即判定会误杀，拒绝转正（回收该规则）。

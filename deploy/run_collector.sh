@@ -14,12 +14,18 @@ fi
 pkill -f miss_collector.py 2>/dev/null || true
 sleep 0.3
 nohup python3 "$SCRIPT" >/tmp/miss_collector.log 2>&1 &
-sleep 1
 
-if curl -sf -m 3 -o /dev/null http://127.0.0.1:8088/selftest; then
-    echo "[collector] listening 0.0.0.0:8088"
-    exit 0
-fi
+# 冷启动（WSL 刚起来）时首次自测可能过早，重试最多 10 次
+i=0
+while [ $i -lt 10 ]; do
+    if curl -sf -m 2 -o /dev/null http://127.0.0.1:8088/selftest; then
+        echo "[collector] listening 0.0.0.0:8088"
+        exit 0
+    fi
+    i=$((i + 1))
+    sleep 0.5
+done
+
 echo "[collector] 启动失败，日志末尾："
 tail -5 /tmp/miss_collector.log 2>/dev/null
 exit 1

@@ -10,7 +10,8 @@ import unittest
 from aiwaf import config, db
 from aiwaf.engine import (Engine, _anchor_rule, _literal_rule, _llm_anchor_rule,
                           _regex_risky, _regex_specific_enough, _resolve_rule,
-                          _scope_inline_flags)
+                          _resolve_rule_ex, _scope_inline_flags,
+                          _scoped_uri_regex)
 from aiwaf.llm_client import LlmClient
 
 
@@ -81,6 +82,42 @@ class TestRuleBuilding(unittest.TestCase):
         rule = _resolve_rule(row, a, "/?q=1;sleep(10) 1;sleep(10)")
         self.assertIsNotNone(rule)
         self.assertTrue(re.search(rule, "1;sleep(10)"))
+
+    def test_resolve_rule_reports_source(self):
+        row = {"host": "demo.test", "uri": "/?q=1;sleep(10)",
+               "payload": "1;sleep(10)"}
+        a = {"verdict": "attack", "confidence": 0.98, "variant": "cmdi",
+             "rule_anchors": [], "suggested_rule": r"\bsleep\s*\("}
+        rule, src = _resolve_rule_ex(row, a, "/?q=1;sleep(10) 1;sleep(10)")
+        self.assertIsNotNone(rule)
+        self.assertEqual(src, "syntax")
+
+    def test_syntax_fallback_can_be_disabled(self):
+        row = {"host": "demo.test", "uri": "/?q=1;sleep(10)",
+               "payload": "1;sleep(10)"}
+        a = {"verdict": "attack", "confidence": 0.98, "variant": "cmdi",
+             "rule_anchors": [], "suggested_rule": r"\bsleep\s*\("}
+        old = config.ALLOW_SYNTAX_FALLBACK
+        config.ALLOW_SYNTAX_FALLBACK = False
+        try:
+            self.assertEqual(_resolve_rule_ex(row, a, "1;sleep(10)"),
+                             (None, None))
+        finally:
+            config.ALLOW_SYNTAX_FALLBACK = old
+
+    def test_scoped_uri_regex_binds_prefix(self):
+        rule = _scoped_uri_regex("/train", r"[;|]\s*sleep\s*\(")
+        self.assertTrue(re.search(rule, "/train/sleep?q=1;sleep(10)"))
+        self.assertTrue(re.search(rule, "/train?q=1;sleep(10)"))
+        self.assertFalse(re.search(rule, "/training?q=1;sleep(10)"))
+        self.assertFalse(re.search(rule, "/other?q=1;sleep(10)"))
+
+    def test_scoped_uri_regex_root_is_unrestricted(self):
+        self.assertEqual(_scoped_uri_regex("/", r"alert\(1\)"), r"alert\(1\)")
+
+    def test_scoped_uri_regex_handles_inline_flags(self):
+        rule = _scoped_uri_regex("/a", r"(?i)union\s+select")
+        self.assertTrue(re.search(rule, "/a/x?q=UNION SELECT"))
 
 
 class TestReplayFailClosed(unittest.TestCase):
@@ -158,16 +195,25 @@ class TestRuleScopeDedup(unittest.TestCase):
         self.assertFalse(db.rule_regex_exists(
             r";\s*whoami", host="demo.test", prefix="/b"))
 
+    def test_add_rule_records_regex_source(self):
+        db.add_rule(name="r", regex="x+", site_id="h", host="h",
+                    uri_prefix="/a", observed_until="2099-01-01 00:00:00",
+                    safeline_policy_id=1, confidence=0.9,
+                    regex_source="model")
+        self.assertEqual(db.stats()["rules_by_source"].get("model"), 1)
+
 
 class FakeSafeline:
     def __init__(self):
         self.names = []
+        self.conditions = []
 
     def build_conditions(self, uri_regex=None, host=None, site_id=None):
         return uri_regex
 
     def create_policy(self, name, conditions, **kwargs):
         self.names.append(name)
+        self.conditions.append(conditions)
         return len(self.names)
 
 
@@ -197,6 +243,8 @@ class TestRuleNaming(unittest.TestCase):
                 {"host": "demo.test", "uri": uri, "payload": ";whoami"}, a)
         self.assertEqual(len(safeline.names), 2)
         self.assertNotEqual(safeline.names[0], safeline.names[1])
+        self.assertTrue(safeline.conditions[0].startswith("^/a"))
+        self.assertTrue(safeline.conditions[1].startswith("^/b"))
 
 
 class TestMissBatchIsolation(unittest.TestCase):
