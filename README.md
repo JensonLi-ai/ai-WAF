@@ -161,11 +161,9 @@ aiwaf/
 └── config.py         # 全局配置（环境变量可覆盖）
 corpus/external/      # 外部攻击语料（SecLists + PayloadsAllTheThings）
 tools/                # 语料构建脚本
-start_llm.bat          # 启动本地大模型 llama-server
-start_collector_wsl.sh # 启动旁路采集器（WSL 内）
-start_engine.bat       # 启动闭环引擎 + Web 面板
-start_keepalive.bat    # 进程保活
-AI-WAF一键恢复.bat      # 一键拉起全部组件
+start_all.bat          # 一键启动（WSL/雷池/采集器/模型/引擎）
+deploy/run_collector.sh # 采集器内部启动脚本（由 start_all.bat 调用）
+aiwaf/boot.py          # 启动引导（雷池登录 + upstream 对齐）
 verify_miss_loop.py   # 漏判闭环回归脚本
 miss_traffic_test.jsonl  # 测试样本
 loadtest.py           # 旁路采集器压测（QPS / 延迟分位）
@@ -179,7 +177,7 @@ tests/test_engine.py  # 核心安全逻辑单元测试
 - **生产推荐：Linux + Docker**（雷池官方支持的环境）
 - 开发验证：Windows 10/11 + **WSL2** + Docker（本项目开发环境）
 - **NVIDIA 独立显卡**（建议 16GB 显存，如 RTX 5060 Ti；低配可换 4B/1.7B 模型）
-- Python 3.10+（引擎侧纯标准库，无需 pip 安装额外依赖）
+- Python 3.10+（引擎侧纯标准库；一键启动引导需 `cryptography` 用于雷池登录加密）
 
 ## 项目就绪度
 
@@ -320,19 +318,12 @@ docker compose up -d --build
 
 ## 快速开始
 
-1. **启动雷池 WAF**（WSL 内）：
-   ```bash
-   # 在 /data/safeline 下
-   docker compose up -d
-   ```
+双击根目录的 `start_all.bat`（或桌面快捷方式「启动AI-WAF」），脚本会按顺序拉起：
+WSL → Docker/雷池 → 旁路采集器 → 本地大模型 → 闭环引擎 + Web 面板。
+大模型若已在运行会自动跳过；关闭命令窗口只停止引擎，其它组件继续运行。
 
-2. **启动本地大模型**（Windows）：运行 `start_llm.bat`
-
-3. **启动旁路采集器**（WSL 内）：运行 `start_collector_wsl.sh`
-
-4. **启动闭环引擎 + Web 面板**：运行 `start_engine.bat`
-
-   或直接双击 `AI-WAF一键恢复.bat` 一键拉起全部组件。
+首次使用需把雷池控制台 admin 密码写入 `%USERPROFILE%\.aiwaf\safeline.pwd`
+（仅保存在本机，启动时用于登录雷池换取临时 JWT，不写入仓库）。
 
 启动后：
 
