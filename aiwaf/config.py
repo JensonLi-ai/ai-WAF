@@ -22,9 +22,11 @@ SSL_VERIFY = False                # 雷池自签证书，原型阶段不校验�
 LLM_BASE = os.environ.get("LLM_BASE", "http://127.0.0.1:1234")
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3-14b")
 LLM_TIMEOUT = 300
-LLM_CALL_TIMEOUT = int(os.environ.get("LLM_CALL_TIMEOUT", "10"))  # 单次调用超时；超时自动关闭 grammar 重试一次
+LLM_CALL_TIMEOUT = int(os.environ.get("LLM_CALL_TIMEOUT", "15"))  # 单次调用超时；超时走快速重试
+LLM_RETRY_TIMEOUT = int(os.environ.get("LLM_RETRY_TIMEOUT", "12"))  # 超时重试的超时（无 grammar + 关 thinking）
 LLM_CONCURRENCY = int(os.environ.get("LLM_CONCURRENCY", "2"))     # 并发研判数（建议 <= llama-server 槽位）
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "512"))  # 输出上限：研判 JSON 足够，且防止 grammar 约束下生成失控
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "256"))  # 输出上限：研判 JSON 足够，且防止 grammar 卡死吐满
+LLM_RETRY_MAX_TOKENS = int(os.environ.get("LLM_RETRY_MAX_TOKENS", "192"))  # 快速重试的输出上限
 LLM_TEMP = 0.1
 # Qwen3 thinking：关闭后更快，但会削弱表达式/编码类语义推理；默认保持开启
 LLM_DISABLE_THINKING = os.environ.get("LLM_DISABLE_THINKING", "0") == "1"

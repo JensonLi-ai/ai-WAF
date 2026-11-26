@@ -157,7 +157,8 @@ class LlmClient:
         self.model = model or config.LLM_MODEL
         self.grammar = _load_grammar()
 
-    def _chat(self, user_prompt, use_grammar=True):
+    def _chat(self, user_prompt, use_grammar=True, timeout=None,
+              max_tokens=None, disable_thinking=None):
         body = {
             "model": self.model,
             "messages": [
@@ -166,9 +167,10 @@ class LlmClient:
             ],
             "temperature": config.LLM_TEMP,
             "stream": False,
-            "max_tokens": config.LLM_MAX_TOKENS,
+            "max_tokens": max_tokens if max_tokens is not None else config.LLM_MAX_TOKENS,
         }
-        if config.LLM_DISABLE_THINKING:
+        thinking = config.LLM_DISABLE_THINKING if disable_thinking is None else disable_thinking
+        if thinking:
             body["chat_template_kwargs"] = {"enable_thinking": False}
         if self.grammar and use_grammar:
             body["grammar"] = self.grammar
@@ -179,7 +181,8 @@ class LlmClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=config.LLM_CALL_TIMEOUT) as resp:
+            with urllib.request.urlopen(
+                    req, timeout=timeout or config.LLM_CALL_TIMEOUT) as resp:
                 return json.loads(resp.read().decode("utf-8", "replace"))
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", "replace")
@@ -279,10 +282,15 @@ class LlmClient:
             try:
                 resp = self._chat(prompt)
             except LlmError as e:
-                # grammar 约束下偶发卡死会拖到超时；关掉 grammar 重试一次通常能快速出结果
+                # grammar 约束下偶发卡死会拖到超时；快速重试：
+                # 关 grammar、关 thinking、降低输出上限，通常能在几秒内给出结论。
                 msg = str(e).lower()
-                if self.grammar and ("timeout" in msg or "timed out" in msg):
-                    resp = self._chat(prompt, use_grammar=False)
+                if "timeout" in msg or "timed out" in msg:
+                    resp = self._chat(
+                        prompt, use_grammar=False,
+                        timeout=config.LLM_RETRY_TIMEOUT,
+                        max_tokens=config.LLM_RETRY_MAX_TOKENS,
+                        disable_thinking=True)
                 else:
                     raise
             content = (resp.get("choices") or [{}])[0] \
