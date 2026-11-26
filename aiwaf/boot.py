@@ -145,7 +145,7 @@ def main():
     if _engine_running():
         print("[boot] 引擎已在运行：http://%s:%d" %
               (config.WEB_HOST, config.WEB_PORT), flush=True)
-        return 0
+        return 2
 
     pwd = _password()
     if not pwd:

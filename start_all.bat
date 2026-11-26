@@ -95,6 +95,12 @@ echo   关闭本窗口只停止引擎，其它组件继续运行
 echo ==============================================
 echo.
 python -m aiwaf.boot
+if errorlevel 2 (
+    echo.
+    echo 引擎已在运行，无需重复启动。
+    ping -n 4 127.0.0.1 >nul
+    exit /b 0
+)
 echo.
 echo 引擎已退出。
 pause
@@ -108,7 +114,7 @@ curl.exe -sfk -m 5 -o NUL "%URL%" >nul 2>&1
 if not errorlevel 1 exit /b 0
 set /a LEFT-=1
 if %LEFT% leq 0 exit /b 1
-timeout /t 3 /nobreak >nul
+ping -n 4 127.0.0.1 >nul
 goto :wait_loop
 
 :failed
