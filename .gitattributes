@@ -1,0 +1,5 @@
+# WSL/Linux 脚本必须保持 LF，否则 shebang 会带 \r 无法执行
+*.sh text eol=lf
+# Windows 批处理保持 CRLF
+*.bat text eol=crlf
+*.py text eol=lf
