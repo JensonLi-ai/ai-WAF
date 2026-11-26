@@ -4,15 +4,19 @@
 对比数字即可判断改动是否有效。
 
 用法：
-    python -m aiwaf.benchmark                 # 全量（攻击 47 + 正常 22）
-    python -m aiwaf.benchmark --category sqli # 只测某类
-    python -m aiwaf.benchmark --limit 20      # 只测前 20 条
-    python -m aiwaf.benchmark --json bench_out.json  # 结果落盘，便于历史对比
+    python -m aiwaf.benchmark                 # 内置 v2 语料
+    python -m aiwaf.benchmark --dataset external   # 外部语料（SecLists/PAT）
+    python -m aiwaf.benchmark --dataset all        # 内置 + 外部
+    python -m aiwaf.benchmark --category sqli      # 只测某类
+    python -m aiwaf.benchmark --limit 20           # 只测前 20 条
+    python -m aiwaf.benchmark --runs 3             # 多轮均值 ± 标准差
+    python -m aiwaf.benchmark --json bench_out.json
 
 要求：本地 LLM 已启动（默认 http://127.0.0.1:1234）。
 """
 import argparse
 import json
+import os
 import re
 import time
 
@@ -21,6 +25,11 @@ from .engine import (MISS_SUSPECT_RE, _anchor_rule, _fix_broken_regex,
                      _literal_rule, _llm_anchor_rule, _repair_rule,
                      _resolve_rule, _regex_risky, _regex_specific_enough)
 from .llm_client import LlmClient
+
+# 外部语料由 tools/build_external_corpus.py 生成
+EXTERNAL_CORPUS = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "corpus", "external", "attack_samples.jsonl")
 
 # ---- 攻击样本：(类别, 名称, payload) ----
 # 选取原则：以「变形/绕过」为主，模拟雷池第一线规则可能漏判、需要 AI 补漏的场景。
@@ -181,6 +190,31 @@ NORMAL_SAMPLES = [
 ]
 
 
+# ---- 外部语料加载 ----
+def load_external_attacks(path=None):
+    """读取 tools/build_external_corpus.py 生成的 JSONL 语料。
+
+    返回 [(category, name, payload), ...]。正常样本仍使用内置 NORMAL_SAMPLES。
+    """
+    p = path or EXTERNAL_CORPUS
+    if not os.path.exists(p):
+        raise SystemExit(
+            "外部语料不存在: %s\n请先运行: python tools/build_external_corpus.py" % p)
+    out = []
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            cat = (row.get("category") or "").strip()
+            payload = row.get("payload") or ""
+            if not cat or not payload:
+                continue
+            out.append((cat, row.get("name") or "external", payload))
+    return out
+
+
 # ---- 模拟雷池第一线（已知签名规则） ----
 # 只覆盖常见固定特征，故意不覆盖变形/编码变种——这些才是 AI 第二层要补的漏。
 # 用途：让端到端指标反映真实链路（先拦一层，漏判才送 AI），避免"所有样本都直接喂 LLM"。
@@ -247,15 +281,25 @@ def _analyze(client, payload, host="bench.test"):
     return a, ms
 
 
-def run(category=None, limit=None, quiet=False):
+def run(category=None, limit=None, quiet=False, dataset="v2", external_path=None):
     say = (lambda *a, **k: None) if quiet else print
     client = LlmClient()
-    atk = [s for s in ATTACK_SAMPLES
+    if dataset == "v2":
+        all_atk = ATTACK_SAMPLES
+    elif dataset == "external":
+        all_atk = load_external_attacks(external_path)
+    elif dataset == "all":
+        all_atk = ATTACK_SAMPLES + load_external_attacks(external_path)
+    else:
+        raise ValueError("unknown dataset: %s" % dataset)
+    atk = [s for s in all_atk
            if category in (None, s[0])]
     norm = [s for s in NORMAL_SAMPLES] if category in (None, "normal") else []
     if limit:
         atk = atk[:limit]
         norm = norm[:limit]
+    label = {"v2": "内置 v2", "external": "外部语料", "all": "内置 + 外部"}[dataset]
+    print("== 数据集: %s ==" % label, flush=True)
 
     # ---- 攻击样本 ----
     per_cat = {}
@@ -423,6 +467,7 @@ def run(category=None, limit=None, quiet=False):
 
     return {
         "model": client.model,
+        "dataset": dataset,
         "attack": {"total": total, "detected": detected,
                    "rate": round(100.0 * detected / total, 1) if total else 0,
                    "avg_ms": round(avg_ms), "avg_conf": round(avg_conf, 3),
@@ -459,22 +504,27 @@ def run(category=None, limit=None, quiet=False):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="AI 研判层离线评测")
-    ap.add_argument("--category", help="只测某类（sqli/xss/cmdi/traversal/ssrf/ssti/xxe/deser/normal）")
+    ap.add_argument("--category", help="只测某类（sqli/xss/cmdi/traversal/ssrf/ssti/xxe/deser/nosql/crlf/ldap/jndi/normal）")
     ap.add_argument("--limit", type=int, help="只测前 N 条")
+    ap.add_argument("--dataset", choices=("v2", "external", "all"), default="v2",
+                    help="语料集：v2=内置，external=外部语料，all=两者合并")
+    ap.add_argument("--external-path", help="外部语料 JSONL 路径（默认 corpus/external/attack_samples.jsonl）")
     ap.add_argument("--json", help="结果落盘路径，便于历史对比")
     ap.add_argument("--runs", type=int, default=1,
                     help="重复轮数（>1 时输出均值/标准差，抵消单次随机波动）")
     args = ap.parse_args(argv)
     runs_n = max(1, args.runs)
     if runs_n == 1:
-        result = run(category=args.category, limit=args.limit)
+        result = run(category=args.category, limit=args.limit,
+                     dataset=args.dataset, external_path=args.external_path)
     else:
         import statistics
         runs = []
         for i in range(runs_n):
             print("\n########## RUN %d/%d ##########" % (i + 1, runs_n))
             runs.append(run(category=args.category, limit=args.limit,
-                            quiet=i > 0))
+                            quiet=i > 0, dataset=args.dataset,
+                            external_path=args.external_path))
         keys = ("rate", "e2e_rate", "overall_rate", "ai_contribution",
                 "rule_valid", "avg_ms", "avg_conf")
         summary = {}
@@ -492,7 +542,8 @@ def main(argv=None):
                  "avg_conf": "平均置信度", "fp_rate": "误报率%"}
         for k, v in summary.items():
             print("  %-22s %.1f ± %.1f" % (names.get(k, k), v["mean"], v["std"]))
-        result = {"model": runs[0]["model"], "runs": runs, "summary": summary}
+        result = {"model": runs[0]["model"], "dataset": args.dataset,
+                  "runs": runs, "summary": summary}
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)

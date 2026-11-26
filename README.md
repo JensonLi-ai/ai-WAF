@@ -159,6 +159,8 @@ aiwaf/
 ├── db.py             # SQLite 存储 + 规则生命周期数据层
 ├── benchmark.py      # AI 研判层离线评测（检出/误报/规则质量）
 └── config.py         # 全局配置（环境变量可覆盖）
+corpus/external/      # 外部攻击语料（SecLists + PayloadsAllTheThings）
+tools/                # 语料构建脚本
 start_llm.bat          # 启动本地大模型 llama-server
 start_collector_wsl.sh # 启动旁路采集器（WSL 内）
 start_engine.bat       # 启动闭环引擎 + Web 面板
@@ -235,6 +237,40 @@ python -m aiwaf.benchmark --runs 3           # 三轮取均值/标准差
 python -m aiwaf.benchmark --category sqli    # 只测某类
 python -m aiwaf.benchmark --json bench_latest.json  # 结果归档
 ```
+
+### 外部语料（推荐用于对外汇报）
+
+内置 v2 语料是自建的，容易被质疑「自己出题自己考」。`corpus/external/`
+从 SecLists 和 PayloadsAllTheThings 抽取了 **78 条攻击样本（12 类，MIT 许可）**，
+用于交叉验证：
+
+```bash
+python tools/build_external_corpus.py          # 重新生成（需访问 GitHub）
+python -m aiwaf.benchmark --dataset external   # 只跑外部语料
+python -m aiwaf.benchmark --dataset all        # 内置 + 外部
+```
+
+说明：
+
+- 正常样本仍使用内置 32 条；外部正常流量语料尚未接入，属已知局限
+- deser / crlf / ldap 三类公开列表中可用的纯 payload 较少，分别只有 2/2/3 条
+- 外部集与内置集分开报告，不混在一起算总分
+- 来源、许可与抽取规则见 [corpus/external/SOURCES.md](corpus/external/SOURCES.md)
+
+外部语料首轮结果（Qwen3-14B，单次 run）：
+
+| 指标 | 结果 |
+|---|---|
+| 裸 LLM 检出率 | **94%（73/78）** |
+| 模型规则原始有效 | 25/73（34%） |
+| 模型规则最终有效 | **70/73（96%）**，其中 42 条靠锚点 |
+| 端到端（全量送 AI） | 92%（72/78） |
+| 模拟雷池第一线直接拦截 | 55/78（71%） |
+| AI 补漏贡献率 | **96%（22/23）** |
+| **整体端到端** | **99%（77/78）** |
+| 正常样本误报 | **0/32** |
+
+> 外部集比自建 v2 更难（检出 94% vs 100%），这正是交叉验证的意义：指标下降但可信度上升。弱项为路径穿越（80%）和 SSTI（83%）；另有 5/78 条长 payload 触发 20s 超时，其中 4 条已被第一线覆盖，因此整体端到端仍为 99%。下一步将按 payload 长度动态调整超时，并补充 deser / crlf / ldap 样本。
 
 ## 运行模式
 
