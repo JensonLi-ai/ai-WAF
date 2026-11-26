@@ -441,7 +441,7 @@ class Engine(threading.Thread):
         self._miss_backlog = deque()
         self._m_lock = threading.Lock()
         self._latencies = deque(maxlen=500)
-        self._started = time.time()
+        self._started_at = time.time()
         self.metrics = {
             "analysis_total": 0, "cache_hits": 0, "llm_calls": 0,
             "llm_errors": 0, "timeouts": 0, "rules_created": 0,
@@ -467,7 +467,7 @@ class Engine(threading.Thread):
             return round(lat[idx])
 
         m.update({
-            "uptime_sec": round(time.time() - self._started),
+            "uptime_sec": round(time.time() - self._started_at),
             "latency_samples": len(lat),
             "latency_p50_ms": pct(0.50),
             "latency_p95_ms": pct(0.95),
@@ -594,7 +594,8 @@ class Engine(threading.Thread):
             self._maybe_create_rule(row2, a)
 
     def _maybe_create_rule(self, row, a):
-        sample = "%s %s" % (row.get("uri") or "", row.get("payload") or "").strip()
+        sample = ("%s %s" % (row.get("uri") or "",
+                             row.get("payload") or "")).strip()
         regex = _resolve_rule(row, a, sample)
         if regex is None:
             log("skip rule: no valid regex (model + literal fallback both failed)")
@@ -779,6 +780,7 @@ class Engine(threading.Thread):
         db.set_kv("last_maint", _iso(_now()))
         log("maintenance cycle begin")
         self._count_hits()
+        self._sync_policy_hits()
         self._promote_and_merge()
         self._recycle()
         self._evict_if_over_cap()
@@ -806,6 +808,32 @@ class Engine(threading.Thread):
                 db.update_rule(rule["id"], hits=rule["hits"] + hit,
                                last_hit=now, zero_hit_since=None)
                 log("rule %s +%d hits" % (rule["name"], hit))
+
+    def _sync_policy_hits(self):
+        """从雷池策略计数同步命中数。
+
+        AI 规则创建时 log=False，被拦请求不会进攻击日志，事件侧 _count_hits
+        永远数不到；这里以策略的 req_count（累计匹配次数）为准做单调同步，
+        否则观察期规则会因 hits=0 被当零命中回收，生命周期无法转正。
+        """
+        try:
+            policies = {}
+            for page in range(1, 5):
+                batch = self.safeline.list_policies(page=page, page_size=100)
+                for p in batch:
+                    policies[str(p.get("id"))] = int(p.get("req_count") or 0)
+                if len(batch) < 100:
+                    break
+        except Exception as e:
+            log("sync policy hits failed: %s" % e)
+            return
+        now = _iso(_now())
+        for rule in db.active_rules():
+            rc = policies.get(str(rule["safeline_policy_id"]))
+            if rc and rc > (rule["hits"] or 0):
+                db.update_rule(rule["id"], hits=rc, last_hit=now,
+                               zero_hit_since=None)
+                log("rule %s hits synced: %d" % (rule["name"], rc))
 
     def _replay_normal(self, regex):
         """回放正常流量池，返回 (status, hits)。
