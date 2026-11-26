@@ -368,14 +368,24 @@ def update_rule(rule_id, **fields):
             conn.close()
 
 
-def rule_regex_exists(regex):
+def rule_regex_exists(regex, host=None, prefix=None):
+    """同一作用域（host + URI 前缀）内是否已有相同正则的生效规则。
+
+    不同作用域的相同正则应允许共存：规则强制绑定站点与 URI 前缀，
+    在 /a 生效不代表 /b 已被覆盖。
+    """
     conn = get_conn()
     try:
-        row = conn.execute(
-            "SELECT id FROM rules WHERE regex=? "
-            "AND status IN ('observing','promoted') AND merged_into IS NULL",
-            (regex,),
-        ).fetchone()
+        sql = ("SELECT id FROM rules WHERE regex=? "
+               "AND status IN ('observing','promoted') AND merged_into IS NULL")
+        args = [regex]
+        if host is not None:
+            sql += " AND coalesce(host,'')=?"
+            args.append(host or "")
+        if prefix is not None:
+            sql += " AND coalesce(uri_prefix,'')=?"
+            args.append(prefix or "")
+        row = conn.execute(sql, args).fetchone()
         return row is not None
     finally:
         conn.close()

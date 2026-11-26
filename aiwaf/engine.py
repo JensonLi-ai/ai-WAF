@@ -600,17 +600,20 @@ class Engine(threading.Thread):
         if regex is None:
             log("skip rule: no valid regex (model + literal fallback both failed)")
             return
-        if db.rule_regex_exists(regex):
-            log("skip rule: regex already covered: %r" % regex[:60])
-            return
         host = row["host"] or None
         site_id = config.DEFAULT_SITE_ID or None
         if config.REQUIRE_SITE_BINDING and not site_id and not host:
             log("skip rule: no site/host to bind (REQUIRE_SITE_BINDING)")
             return
         prefix = _uri_prefix(row.get("uri"))
-        name = "AI-%s-%s" % (_slug(a.get("variant")),
-                             hashlib.md5(regex.encode()).hexdigest()[:8])
+        scope = "%s|%s" % (host or "", prefix)
+        if db.rule_regex_exists(regex, host=host or "", prefix=prefix):
+            log("skip rule: regex already covered in scope %s: %r" %
+                (scope, regex[:60]))
+            return
+        name = "AI-%s-%s" % (
+            _slug(a.get("variant")),
+            hashlib.md5((regex + "|" + scope).encode()).hexdigest()[:8])
         conditions = self.safeline.build_conditions(
             uri_regex=regex, host=host, site_id=site_id)
         policy_id = self._create_policy_with_site_op_fallback(name, conditions)
@@ -660,7 +663,10 @@ class Engine(threading.Thread):
         if not lines:
             return
         for line in lines:
-            self._collect_normal(line)
+            try:
+                self._collect_normal(line)
+            except Exception as e:
+                log("collect normal failed: %s" % e)
         cands = self._extract_miss_candidates(lines)
         # 超出单轮上限的候选进 backlog，下一轮继续处理，避免静默丢弃
         self._miss_backlog.extend(cands)
@@ -672,7 +678,13 @@ class Engine(threading.Thread):
                 (len(cands), len(self._miss_backlog)))
         processed = 0
         while self._miss_backlog and processed < config.MISS_MAX_BATCH:
-            self._analyze_miss(self._miss_backlog.popleft())
+            cand = self._miss_backlog.popleft()
+            try:
+                self._analyze_miss(cand)
+            except Exception as e:
+                # 单条失败只跳过该条，不能让整批漏判候选一起丢
+                log("miss analyze failed (%s): %s" %
+                    (cand.get("uri", "")[:80], e))
             processed += 1
         if len(self._miss_seen) > 50000:
             self._miss_seen.clear()

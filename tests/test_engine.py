@@ -103,6 +103,99 @@ class TestReplayFailClosed(unittest.TestCase):
         self.assertEqual(db.normal_pool_count(), config.NORMAL_POOL_MIN + 2)
 
 
+class TestRuleScopeDedup(unittest.TestCase):
+    def setUp(self):
+        self.db_path = tempfile.mktemp(suffix=".db")
+        self._orig = config.DB_PATH
+        config.DB_PATH = self.db_path
+        db.init()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(self.db_path + suffix)
+            except OSError:
+                pass
+
+    def _add(self, prefix):
+        db.add_rule(name="r" + prefix, regex=r";\s*whoami",
+                    site_id="demo.test", host="demo.test",
+                    uri_prefix=prefix, observed_until="2099-01-01 00:00:00",
+                    safeline_policy_id=1, confidence=0.9)
+
+    def test_same_scope_is_deduped(self):
+        self._add("/a")
+        self.assertTrue(db.rule_regex_exists(
+            r";\s*whoami", host="demo.test", prefix="/a"))
+
+    def test_other_scope_is_not_covered(self):
+        self._add("/a")
+        self.assertFalse(db.rule_regex_exists(
+            r";\s*whoami", host="demo.test", prefix="/b"))
+
+
+class FakeSafeline:
+    def __init__(self):
+        self.names = []
+
+    def build_conditions(self, uri_regex=None, host=None, site_id=None):
+        return uri_regex
+
+    def create_policy(self, name, conditions, **kwargs):
+        self.names.append(name)
+        return len(self.names)
+
+
+class TestRuleNaming(unittest.TestCase):
+    def setUp(self):
+        self.db_path = tempfile.mktemp(suffix=".db")
+        self._orig = config.DB_PATH
+        config.DB_PATH = self.db_path
+        db.init()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(self.db_path + suffix)
+            except OSError:
+                pass
+
+    def test_same_regex_different_prefix_gets_unique_name(self):
+        safeline = FakeSafeline()
+        eng = Engine(safeline, FakeLlm())
+        a = {"verdict": "attack", "confidence": 0.99, "variant": "cmdi",
+             "rule_anchors": [], "suggested_rule": r";\s*whoami",
+             "explain": "fake", "model": "fake"}
+        for uri in ("/a?q=;whoami", "/b?q=;whoami"):
+            eng._maybe_create_rule(
+                {"host": "demo.test", "uri": uri, "payload": ";whoami"}, a)
+        self.assertEqual(len(safeline.names), 2)
+        self.assertNotEqual(safeline.names[0], safeline.names[1])
+
+
+class TestMissBatchIsolation(unittest.TestCase):
+    def test_one_bad_candidate_does_not_abort_batch(self):
+        eng = Engine(None, FakeLlm())
+        eng._read_miss_log = lambda: ["{}", "{}"]
+        eng._collect_normal = lambda line: None
+        eng._extract_miss_candidates = lambda lines: [
+            {"uri": "/bad", "host": "h", "client": "c"},
+            {"uri": "/ok", "host": "h", "client": "c"},
+        ]
+        calls = []
+
+        def fake(cand):
+            calls.append(cand["uri"])
+            if cand["uri"] == "/bad":
+                raise RuntimeError("boom")
+
+        eng._analyze_miss = fake
+        eng.poll_misses()
+        self.assertEqual(calls, ["/bad", "/ok"])
+
+
 class TestPromptInjection(unittest.TestCase):
     def test_injection_is_attack_without_llm(self):
         client = LlmClient()  # 不发起网络请求
