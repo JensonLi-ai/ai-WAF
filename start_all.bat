@@ -85,6 +85,15 @@ set "AIWAF_WSL_IP=%WSL_IP%"
 set "RUN_MODE=auto"
 set "WEB_PORT=8899"
 set "MISS_COLLECTOR_PORT=18088"
+set "PANEL_TOKEN_FILE=%USERPROFILE%\.aiwaf\panel_token"
+if not exist "%PANEL_TOKEN_FILE%" (
+    python -c "import os,secrets;p=os.path.join(os.path.expanduser('~'),'.aiwaf','panel_token');os.makedirs(os.path.dirname(p),exist_ok=True);open(p,'w',newline='').write(secrets.token_urlsafe(18))"
+)
+if not exist "%PANEL_TOKEN_FILE%" (
+    echo   [错误] 无法生成面板访问令牌
+    goto :failed
+)
+set /p WEB_AUTH_TOKEN=<"%PANEL_TOKEN_FILE%"
 echo.
 echo ==============================================
 echo   面板  http://127.0.0.1:8899
@@ -93,6 +102,7 @@ echo   模型  http://127.0.0.1:1234
 echo   关闭本窗口只停止引擎，其它组件继续运行
 echo ==============================================
 echo.
+echo   面板令牌：%WEB_AUTH_TOKEN%（%PANEL_TOKEN_FILE%）
 python -m aiwaf.boot
 if errorlevel 2 (
     echo.

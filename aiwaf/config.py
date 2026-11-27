@@ -54,6 +54,9 @@ PROMOTE_THRESHOLD_HITS = 3           # 观察期命中次数阈值(转正参考)
 # 0 = 只接受 LLM 生成的正则 / LLM 逐字锚点 / 字面兜底；仍写不出规则则跳过。
 ALLOW_SYNTAX_FALLBACK = os.environ.get("ALLOW_SYNTAX_FALLBACK", "1") == "1"
 
+# 正则执行硬超时（秒）。需安装可选依赖 regex；没装则退化为标准库（无超时）。
+REGEX_TIMEOUT = float(os.environ.get("REGEX_TIMEOUT", "0.05"))
+
 # ---- 转正前零误杀回放（防误杀最后闸门） ----
 # 规则观察期结束、准备转正拦截前，先用"已知正常流量池"回放一遍正则；
 # 命中任意一条正常请求即判定会误杀，拒绝转正（回收该规则）。
@@ -61,6 +64,13 @@ PROMOTE_GUARD_ENABLED = os.environ.get("PROMOTE_GUARD_ENABLED", "1") == "1"
 NORMAL_POOL_MIN = int(os.environ.get("NORMAL_POOL_MIN", "20"))     # 正常池至少 N 条才允许转正（不足则 fail-closed）
 NORMAL_POOL_MAX = int(os.environ.get("NORMAL_POOL_MAX", "2000"))   # 正常池上限，超出淘汰最旧
 PROMOTE_REVIEW_MAX = int(os.environ.get("PROMOTE_REVIEW_MAX", "20"))  # 回放命中项 LLM 复核上限，防污染池拖慢转正
+
+# ---- 正常池入池审查（防攻击者灌污染样本） ----
+# 新入池样本按百分比抽检交给 LLM 复核；判 attack 且高置信度则拒绝入池。
+NORMAL_REVIEW_PCT = int(os.environ.get("NORMAL_REVIEW_PCT", "10"))  # 0=关闭抽检
+NORMAL_REVIEW_MAX_PER_POLL = int(os.environ.get("NORMAL_REVIEW_MAX_PER_POLL", "5"))
+# 单个源 IP 最多贡献多少条正常样本；0=不限
+NORMAL_POOL_IP_QUOTA = int(os.environ.get("NORMAL_POOL_IP_QUOTA", "200"))
 
 # ---- 本地存储 ----
 DB_PATH = os.environ.get("AIWAF_DB", os.path.join(os.path.dirname(__file__), "aiwaf.db"))

@@ -131,11 +131,12 @@ AI 自动生成规则最大的风险是生成"过宽泛"的规则误杀正常业
 除防误杀外，系统本身也按"不可信输入"设计：
 
 - **回放 fail-closed**：正常流量池样本数不足 `NORMAL_POOL_MIN` 时，规则**不转正**（保持观察期），而不是直接放行。
-- **正常池抗污染**：回放命中项先交 LLM 复核；判定为攻击的条目立即从正常池隔离，防止攻击者用污染样本压制规则。LLM 出错时保守拒绝转正。
+- **正常池抗污染**：回放命中项先交 LLM 复核；判定为攻击的条目立即从正常池隔离，防止攻击者用污染样本压制规则。LLM 出错时保守拒绝转正。入池侧再做两道防线：新样本按 `NORMAL_REVIEW_PCT`（默认 10%）抽检交 LLM 复核，单源 IP 最多贡献 `NORMAL_POOL_IP_QUOTA`（默认 200）条，防止单一攻击者批量灌样本。
 - **提示词注入防护**：payload 被包裹在 `<untrusted_event>` 标签内并声明为不可信数据；同时有确定性检测（`ignore previous instructions`、`忽略指令`、`system prompt` 等），命中直接按攻击处理，不依赖模型是否被说服。
-- **面板鉴权 / CSRF**：`WEB_AUTH_TOKEN` 设置后所有 `/api/*`（除健康检查）需 `X-Auth-Token`；POST 校验同源 `Origin` 且强制 `application/json`，阻断表单型 CSRF。未设置令牌时仅允许绑定回环地址，绑非回环直接拒绝启动。
+- **面板鉴权 / CSRF**：`WEB_AUTH_TOKEN` 设置后所有 `/api/*`（除健康检查）需 `X-Auth-Token`；POST 校验同源 `Origin` 且强制 `application/json`，阻断表单型 CSRF。未设置令牌时仅允许绑定回环地址，绑非回环直接拒绝启动。一键启动脚本会自动生成令牌到 `%USERPROFILE%\.aiwaf\panel_token` 并注入 `WEB_AUTH_TOKEN`。
 - **规则安全**：拒绝嵌套量词 ReDoS 结构；字面规则截断后必须可编译；规则合并前重新回放；`(?i)` 等内联标志转作用域形式，避免拼接后编译失败。
-- **候选不丢**：单轮超出 `MISS_MAX_BATCH` 的漏判候选进入 backlog，下一轮继续处理。
+- **正则硬超时**：规则匹配统一走带超时的 `regex` 引擎（`REGEX_TIMEOUT`，默认 50ms）。单条规则回溯超时只跳过该规则本轮统计，转正回放超时按 `invalid` 处理（fail-closed，不转正）；未安装可选依赖时退化为标准库、无超时能力。
+- **候选不丢**：单轮超出 `MISS_MAX_BATCH` 的漏判候选进入 backlog，下一轮继续处理；backlog 超过上限时淘汰最旧条目并累计 `miss_dropped` 指标、打印告警，不再静默丢弃。
 
 ## 规则生命周期
 
@@ -177,7 +178,7 @@ tests/test_engine.py  # 核心安全逻辑单元测试
 - **生产推荐：Linux + Docker**（雷池官方支持的环境）
 - 开发验证：Windows 10/11 + **WSL2** + Docker（本项目开发环境）
 - **NVIDIA 独立显卡**（建议 16GB 显存，如 RTX 5060 Ti；低配可换 4B/1.7B 模型）
-- Python 3.10+（引擎侧纯标准库；一键启动引导需 `cryptography` 用于雷池登录加密）
+- Python 3.10+（引擎侧纯标准库；一键启动引导需 `cryptography` 用于雷池登录加密；可选 `regex` 用于正则匹配硬超时）
 
 ## 项目就绪度
 
@@ -188,7 +189,7 @@ tests/test_engine.py  # 核心安全逻辑单元测试
 
 已知限制：
 - 存储为单文件 SQLite，引擎 / 采集器 / Web 面板多进程并发读写依赖 busy_timeout 串行化，适合原型与中小流量；高并发生产需换 Postgres。
-- 正常流量回放池靠粗筛过滤疑似攻击，仍存在极低概率被「粗筛与 LLM 均漏判」的变形攻击污染、进而延迟某条规则转正的可能，属已知边界（回放命中项 LLM 复核已列入后续计划）。
+- 正常流量回放池靠粗筛过滤疑似攻击，并已加入池抽检与单 IP 配额；仍存在「粗筛与 LLM 均漏判」的变形攻击污染正常池的极低概率可能，属已知边界。
 
 > 本项目下一步目标：在更大算力上完成基座模型的领域微调与攻防对抗评测，达到生产级检出与误报指标后，再发布生产部署建议。
 
@@ -321,7 +322,7 @@ ALLOW_SYNTAX_FALLBACK=0 python -m aiwaf.main
 | 并发研判 | `LLM_CONCURRENCY`（默认 2）并发调用，适配 llama-server 多槽位；SQLite 已开 WAL |
 | 超时降级 | 单次调用 10s 超时，超时自动**关闭 grammar 重试一次**，避免 grammar 卡死拖慢整轮 |
 | 健康检查 | `GET /api/health` |
-| 运行指标 | `GET /api/metrics`：延迟 p50/p95/p99、缓存命中、LLM 错误、规则创建数、队列统计 |
+| 运行指标 | `GET /api/metrics`：延迟 p50/p95/p99、缓存命中、LLM 错误、规则创建数、队列统计；安全加固相关计数含 `miss_dropped`、`normal_reviewed`、`normal_rejected`、`normal_ip_quota_skipped`、`regex_timeouts` |
 
 ```bash
 curl http://127.0.0.1:8899/api/health

@@ -497,6 +497,19 @@ def normal_pool_count():
         conn.close()
 
 
+def normal_pool_ip_count(src_ip):
+    """某个源 IP 已贡献的正常样本数（用于入池配额，防单 IP 灌污染）。"""
+    if not src_ip:
+        return 0
+    conn = get_conn()
+    try:
+        return conn.execute(
+            "SELECT COUNT(*) c FROM normal_pool WHERE src_ip=?",
+            (src_ip,)).fetchone()["c"]
+    finally:
+        conn.close()
+
+
 # ---------------- 研判结果缓存 ----------------
 
 def cache_key(host, uri, payload):

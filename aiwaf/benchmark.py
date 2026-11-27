@@ -21,9 +21,10 @@ import re
 import time
 
 from . import config
-from .engine import (MISS_SUSPECT_RE, _fix_broken_regex, _llm_anchor_rule,
-                     _repair_rule, _resolve_rule_ex, _regex_risky,
-                     _regex_specific_enough)
+from .engine import (MISS_SUSPECT_RE, _RX_ERROR, _RegexTimeout,
+                     _fix_broken_regex, _llm_anchor_rule, _repair_rule,
+                     _resolve_rule_ex, _regex_risky, _regex_specific_enough,
+                     _rx_compile, _rx_search)
 from .llm_client import LlmClient
 
 # 外部语料由 tools/build_external_corpus.py 生成
@@ -257,16 +258,21 @@ def _judge_rule_quality(payload, rule):
         return False, "empty"
     fixed = rule
     try:
-        re.compile(fixed)
-    except re.error as e:
+        _rx_compile(fixed)
+    except _RX_ERROR as e:
         fixed = _fix_broken_regex(rule)
         if fixed is None:
             return False, "compile: %s" % e
     if _regex_risky(fixed):
         return False, "redos-risk"
-    rx = re.compile(fixed)
-    if not rx.search(payload):
-        return False, "not-match-sample"
+    try:
+        rx = _rx_compile(fixed)
+        if not _rx_search(rx, payload):
+            return False, "not-match-sample"
+    except _RegexTimeout:
+        return False, "timeout"
+    except _RX_ERROR:
+        return False, "compile: invalid"
     ok, why = _regex_specific_enough(fixed)
     if not ok:
         return False, "too-broad"

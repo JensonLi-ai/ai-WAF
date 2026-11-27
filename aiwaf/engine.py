@@ -19,6 +19,35 @@ from urllib.parse import unquote
 
 from . import config, db
 
+try:  # 可选依赖：regex 支持匹配硬超时；没有则退化为标准库（无超时）
+    import regex as _regex_engine
+except ImportError:  # pragma: no cover - 取决于部署环境
+    _regex_engine = None
+
+_RX_RE = _regex_engine or re
+_RX_ERROR = _RX_RE.error
+_RX_TIMEOUT_ERRORS = (TimeoutError,)
+if _regex_engine is not None and hasattr(_regex_engine, "TimeoutError"):
+    _RX_TIMEOUT_ERRORS = (TimeoutError, _regex_engine.TimeoutError)
+
+
+class _RegexTimeout(Exception):
+    """正则匹配超过 REGEX_TIMEOUT（防 ReDoS 卡死）。"""
+
+
+def _rx_compile(pattern):
+    return _RX_RE.compile(pattern)
+
+
+def _rx_search(rx, text, timeout=None):
+    if _regex_engine is None:
+        return rx.search(text)
+    try:
+        return rx.search(text, timeout=config.REGEX_TIMEOUT
+                         if timeout is None else timeout)
+    except _RX_TIMEOUT_ERRORS as e:
+        raise _RegexTimeout(str(e)) from e
+
 MAX_ANALYZE_BATCH = 4      # 每个轮询周期最多研判的事件数
 MAX_POLL_PAGES = 5         # 每次轮询最多翻的日志页数
 
@@ -136,10 +165,15 @@ _BAD_BOUNDARY_RE = re.compile(r"""(?<=[&|;'"`<>/=,:({\[.\\])\\b""")
 
 def _rule_matches(rule, sample):
     try:
-        rx = re.compile(rule)
-    except re.error:
+        rx = _rx_compile(rule)
+    except _RX_ERROR:
         return False
-    return (not sample) or bool(rx.search(sample))
+    if not sample:
+        return True
+    try:
+        return bool(_rx_search(rx, sample))
+    except (_RX_ERROR, _RegexTimeout):
+        return False
 
 
 # ReDoS 启发式：嵌套量词 (a+)+ / (.*)* 是灾难性回溯的典型结构
@@ -167,8 +201,8 @@ def _contextualize(rule, sample):
     if fm:
         flags, rule = fm.group(0), rule[fm.end():]
     try:
-        m = re.search(rule, sample)
-    except re.error:
+        m = _rx_search(_rx_compile(rule), sample)
+    except (_RX_ERROR, _RegexTimeout):
         return None
     if not m:
         return None
@@ -317,9 +351,9 @@ def _fix_broken_regex(regex):
     if not fixed:
         return None
     try:
-        re.compile(fixed)
+        _rx_compile(fixed)
         return fixed
-    except re.error:
+    except _RX_ERROR:
         return None
 
 
@@ -339,10 +373,10 @@ def _literal_rule(row):
         while esc:
             cand = re.sub(r"\\+$", "", esc)
             try:
-                re.compile(cand)
+                _rx_compile(cand)
                 esc = cand
                 break
-            except re.error:
+            except _RX_ERROR:
                 esc = esc[:-1]
         if not esc:
             return None
@@ -487,6 +521,9 @@ class Engine(threading.Thread):
         self.metrics = {
             "analysis_total": 0, "cache_hits": 0, "llm_calls": 0,
             "llm_errors": 0, "timeouts": 0, "rules_created": 0,
+            "miss_dropped": 0, "normal_reviewed": 0,
+            "normal_rejected": 0, "normal_ip_quota_skipped": 0,
+            "regex_timeouts": 0,
         }
 
     def _metric(self, name, delta=1):
@@ -522,8 +559,10 @@ class Engine(threading.Thread):
     # ---------------- 主循环 ----------------
 
     def run(self):
-        log("engine start: poll=%ss analyze_delay=%ss" %
-            (config.POLL_INTERVAL, config.ANALYZE_DELAY))
+        log("engine start: poll=%ss analyze_delay=%ss regex_timeout=%s" %
+            (config.POLL_INTERVAL, config.ANALYZE_DELAY,
+             ("%.0fms" % (config.REGEX_TIMEOUT * 1000)) if _regex_engine
+             else "unavailable (pip install regex)"))
         while True:
             try:
                 self.poll_events()
@@ -708,17 +747,28 @@ class Engine(threading.Thread):
         lines = self._read_miss_log()
         if not lines:
             return
+        normals = []
         for line in lines:
             try:
-                self._collect_normal(line)
+                c = self._normal_candidate(line)
             except Exception as e:
                 log("collect normal failed: %s" % e)
+                c = None
+            if c:
+                normals.append(c)
+        self._store_normals(normals)
         cands = self._extract_miss_candidates(lines)
         # 超出单轮上限的候选进 backlog，下一轮继续处理，避免静默丢弃
         self._miss_backlog.extend(cands)
         backlog_cap = max(100, config.MISS_MAX_BATCH * 50)
+        dropped = 0
         while len(self._miss_backlog) > backlog_cap:
             self._miss_backlog.popleft()
+            dropped += 1
+        if dropped:
+            self._metric("miss_dropped", dropped)
+            log("miss backlog overflow: dropped %d oldest candidates (cap=%d)" %
+                (dropped, backlog_cap))
         if cands and len(self._miss_backlog) > config.MISS_MAX_BATCH:
             log("miss backlog: +%d, %d pending" %
                 (len(cands), len(self._miss_backlog)))
@@ -752,25 +802,69 @@ class Engine(threading.Thread):
         db.set_kv("miss_log_offset", str(new_offset))
         return [l for l in data.splitlines() if l.strip()]
 
-    def _collect_normal(self, line):
-        """粗筛未命中的放行流量视为正常，写入正常流量池（供转正前回放）。"""
+    def _normal_candidate(self, line):
+        """粗筛未命中的放行流量候选（先不落库，交由 _store_normals 审查）。"""
         if not config.PROMOTE_GUARD_ENABLED:
-            return
+            return None
         try:
             obj = json.loads(line)
         except (ValueError, TypeError):
-            return
+            return None
         raw_uri = obj.get("raw_uri") or obj.get("uri") or ""
         if not raw_uri:
-            return
+            return None
         try:
             uri = unquote(raw_uri)
         except Exception:
             uri = raw_uri
         if MISS_SUSPECT_RE.search(uri):
-            return  # 疑似攻击，不进正常池
-        db.add_normal(uri, host=obj.get("host", ""), uri=uri,
-                      src_ip=obj.get("src_ip", ""))
+            return None  # 疑似攻击，不进正常池
+        return {"uri": uri, "host": obj.get("host", ""),
+                "src_ip": obj.get("src_ip", "")}
+
+    def _store_normals(self, cands):
+        """抽检 + 单 IP 配额后写入正常池，防止攻击者批量灌污染样本。"""
+        if not cands:
+            return
+        review_n = 0
+        if config.NORMAL_REVIEW_PCT > 0:
+            review_n = (len(cands) * config.NORMAL_REVIEW_PCT + 99) // 100
+            review_n = max(1, review_n)
+            review_n = min(review_n, config.NORMAL_REVIEW_MAX_PER_POLL,
+                           len(cands))
+        ip_counts = {}
+        rejected = quota_skipped = 0
+        for idx, c in enumerate(cands):
+            if idx < review_n:
+                query = c["uri"].split("?", 1)[1] if "?" in c["uri"] else ""
+                a = self.llm.analyze({
+                    "host": c["host"], "uri": c["uri"],
+                    "payload": query or c["uri"], "src_ip": c["src_ip"]})
+                self._metric("normal_reviewed")
+                if (a.get("verdict") == "attack"
+                        and a.get("confidence", 0) >= config.MIN_CONFIDENCE
+                        and not a.get("_error")):
+                    rejected += 1
+                    log("normal-pool rejected attack-like sample: %s" %
+                        c["uri"][:80])
+                    continue
+            ip = c["src_ip"]
+            if config.NORMAL_POOL_IP_QUOTA > 0 and ip:
+                if ip not in ip_counts:
+                    ip_counts[ip] = db.normal_pool_ip_count(ip)
+                if ip_counts[ip] >= config.NORMAL_POOL_IP_QUOTA:
+                    quota_skipped += 1
+                    continue
+            if db.add_normal(c["uri"], host=c["host"], uri=c["uri"],
+                             src_ip=ip):
+                if ip:
+                    ip_counts[ip] = ip_counts.get(ip, 0) + 1
+        if rejected:
+            self._metric("normal_rejected", rejected)
+        if quota_skipped:
+            self._metric("normal_ip_quota_skipped", quota_skipped)
+            log("normal pool ip quota reached: skipped %d samples" %
+                quota_skipped)
 
     def _extract_miss_candidates(self, lines):
         out = []
@@ -854,14 +948,20 @@ class Engine(threading.Thread):
         now = _iso(_now())
         for rule in db.active_rules():
             try:
-                rx = re.compile(rule["regex"])
-            except re.error:
+                rx = _rx_compile(rule["regex"])
+            except _RX_ERROR:
                 continue
             hit = 0
-            for r in rows:
-                text = "%s %s" % ((r["uri"] or ""), (r["payload"] or ""))
-                if rx.search(text[:4096]):
-                    hit += 1
+            try:
+                for r in rows:
+                    text = "%s %s" % ((r["uri"] or ""), (r["payload"] or ""))
+                    if _rx_search(rx, text[:4096]):
+                        hit += 1
+            except _RegexTimeout:
+                # 单条规则超时只跳过本轮统计，不能卡住整个维护周期
+                self._metric("regex_timeouts")
+                log("rule %s hit-count skipped: regex timeout" % rule["name"])
+                continue
             if hit:
                 db.update_rule(rule["id"], hits=rule["hits"] + hit,
                                last_hit=now, zero_hit_since=None)
@@ -910,15 +1010,21 @@ class Engine(threading.Thread):
         if db.normal_pool_count() < config.NORMAL_POOL_MIN:
             return "insufficient", []
         try:
-            rx = re.compile(regex)
-        except re.error:
+            rx = _rx_compile(regex)
+        except _RX_ERROR:
             return "invalid", []
         hits = []
-        for text in db.normal_pool_texts():
-            if rx.search(text[:4096]):
-                hits.append(text)
-                if len(hits) >= config.PROMOTE_REVIEW_MAX:
-                    break
+        try:
+            for text in db.normal_pool_texts():
+                if _rx_search(rx, text[:4096]):
+                    hits.append(text)
+                    if len(hits) >= config.PROMOTE_REVIEW_MAX:
+                        break
+        except _RegexTimeout:
+            # 匹配超时说明规则可能引发灾难性回溯，按不可用处理（fail-closed）
+            self._metric("regex_timeouts")
+            log("promote-guard: regex timeout, defer promotion")
+            return "invalid", []
         if not hits:
             return "clean", []
         for text in hits:

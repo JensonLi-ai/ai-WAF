@@ -8,6 +8,8 @@ import tempfile
 import unittest
 
 from aiwaf import config, db
+from aiwaf import engine as engine_mod
+from aiwaf.benchmark import _judge_rule_quality
 from aiwaf.engine import (Engine, _anchor_rule, _literal_rule, _llm_anchor_rule,
                           _regex_risky, _regex_specific_enough, _resolve_rule,
                           _resolve_rule_ex, _scope_inline_flags,
@@ -251,7 +253,7 @@ class TestMissBatchIsolation(unittest.TestCase):
     def test_one_bad_candidate_does_not_abort_batch(self):
         eng = Engine(None, FakeLlm())
         eng._read_miss_log = lambda: ["{}", "{}"]
-        eng._collect_normal = lambda line: None
+        eng._normal_candidate = lambda line: None
         eng._extract_miss_candidates = lambda lines: [
             {"uri": "/bad", "host": "h", "client": "c"},
             {"uri": "/ok", "host": "h", "client": "c"},
@@ -266,6 +268,141 @@ class TestMissBatchIsolation(unittest.TestCase):
         eng._analyze_miss = fake
         eng.poll_misses()
         self.assertEqual(calls, ["/bad", "/ok"])
+
+    def test_backlog_overflow_is_counted(self):
+        eng = Engine(None, FakeLlm())
+        eng._read_miss_log = lambda: ["{}"]
+        eng._normal_candidate = lambda line: None
+        eng._extract_miss_candidates = lambda lines: [
+            {"uri": "/new", "host": "h", "client": "c"}]
+        eng._analyze_miss = lambda cand: None
+        cap = max(100, config.MISS_MAX_BATCH * 50)
+        for i in range(cap + 4):
+            eng._miss_backlog.append(
+                {"uri": "/old%d" % i, "host": "h", "client": "c"})
+        eng.poll_misses()
+        self.assertEqual(eng.metrics["miss_dropped"], 5)
+
+
+class TestNormalPoolGuard(unittest.TestCase):
+    def setUp(self):
+        self.db_path = tempfile.mktemp(suffix=".db")
+        self._orig = config.DB_PATH
+        config.DB_PATH = self.db_path
+        db.init()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(self.db_path + suffix)
+            except OSError:
+                pass
+
+    def test_attack_like_sample_is_rejected(self):
+        class AttackLlm:
+            def analyze(self, ev):
+                return {"verdict": "attack", "confidence": 0.99,
+                        "variant": "sqli", "rule_anchors": [],
+                        "suggested_rule": "", "explain": "fake",
+                        "model": "fake"}
+
+        old = config.NORMAL_REVIEW_PCT
+        config.NORMAL_REVIEW_PCT = 100
+        try:
+            eng = Engine(None, AttackLlm())
+            eng._store_normals([
+                {"uri": "/evil?q=1", "host": "h", "src_ip": "1.1.1.1"}])
+            self.assertEqual(db.normal_pool_count(), 0)
+            self.assertEqual(eng.metrics["normal_rejected"], 1)
+        finally:
+            config.NORMAL_REVIEW_PCT = old
+
+    def test_ip_quota_limits_flood(self):
+        old_q = config.NORMAL_POOL_IP_QUOTA
+        old_pct = config.NORMAL_REVIEW_PCT
+        config.NORMAL_POOL_IP_QUOTA = 1
+        config.NORMAL_REVIEW_PCT = 0
+        try:
+            eng = Engine(None, FakeLlm())
+            eng._store_normals([
+                {"uri": "/a?q=1", "host": "h", "src_ip": "2.2.2.2"},
+                {"uri": "/b?q=2", "host": "h", "src_ip": "2.2.2.2"},
+                {"uri": "/c?q=3", "host": "h", "src_ip": "3.3.3.3"},
+            ])
+            self.assertEqual(db.normal_pool_count(), 2)
+            self.assertEqual(eng.metrics["normal_ip_quota_skipped"], 1)
+        finally:
+            config.NORMAL_POOL_IP_QUOTA = old_q
+            config.NORMAL_REVIEW_PCT = old_pct
+
+    def test_sampling_is_capped_per_poll(self):
+        old_pct = config.NORMAL_REVIEW_PCT
+        old_max = config.NORMAL_REVIEW_MAX_PER_POLL
+        config.NORMAL_REVIEW_PCT = 100
+        config.NORMAL_REVIEW_MAX_PER_POLL = 1
+        try:
+            eng = Engine(None, FakeLlm())
+            eng._store_normals([
+                {"uri": "/a?q=1", "host": "h", "src_ip": "4.4.4.4"},
+                {"uri": "/b?q=2", "host": "h", "src_ip": "4.4.4.4"},
+            ])
+            self.assertEqual(eng.metrics["normal_reviewed"], 1)
+        finally:
+            config.NORMAL_REVIEW_PCT = old_pct
+            config.NORMAL_REVIEW_MAX_PER_POLL = old_max
+
+
+class TestRegexTimeout(unittest.TestCase):
+    """正则匹配硬超时：防灾难性回溯卡死引擎（需可选依赖 regex）。"""
+
+    def test_helper_raises_timeout_on_backtracking(self):
+        if engine_mod._regex_engine is None:
+            self.skipTest("未安装 regex，无匹配超时能力")
+        rx = engine_mod._rx_compile(r"(a+)+$")
+        with self.assertRaises(engine_mod._RegexTimeout):
+            engine_mod._rx_search(rx, "a" * 20000 + "!")
+
+    def test_rule_matches_fails_closed_on_timeout(self):
+        if engine_mod._regex_engine is None:
+            self.skipTest("未安装 regex，无匹配超时能力")
+        self.assertFalse(
+            engine_mod._rule_matches(r"(a+)+$", "a" * 20000 + "!"))
+
+    def test_judge_rule_quality_reports_timeout(self):
+        if engine_mod._regex_engine is None:
+            self.skipTest("未安装 regex，无匹配超时能力")
+        ok, why = _judge_rule_quality("a" * 20000 + "!", r"(a|aa)+$")
+        self.assertFalse(ok)
+        self.assertEqual(why, "timeout")
+
+
+class TestRegexTimeoutReplay(unittest.TestCase):
+    def setUp(self):
+        self.db_path = tempfile.mktemp(suffix=".db")
+        self._orig = config.DB_PATH
+        config.DB_PATH = self.db_path
+        db.init()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.remove(self.db_path + suffix)
+            except OSError:
+                pass
+
+    def test_replay_treats_timeout_as_invalid(self):
+        if engine_mod._regex_engine is None:
+            self.skipTest("未安装 regex，无匹配超时能力")
+        for i in range(config.NORMAL_POOL_MIN):
+            db.add_normal("/?q=hello+%d" % i)
+        # 末尾非 a 迫使 (a+)+$ 灾难性回溯
+        db.add_normal("/?q=" + "a" * 4090 + "!")
+        eng = Engine(None, FakeLlm())
+        status, _ = eng._replay_normal(r"(a+)+$")
+        self.assertEqual(status, "invalid")  # fail-closed：不转正
+        self.assertEqual(eng.metrics["regex_timeouts"], 1)
 
 
 class TestPromptInjection(unittest.TestCase):
