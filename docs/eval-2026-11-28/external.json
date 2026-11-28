@@ -1,0 +1,114 @@
+{
+  "model": "qwen3-14b",
+  "dataset": "external",
+  "guard": true,
+  "attack": {
+    "total": 78,
+    "detected": 78,
+    "rate": 100.0,
+    "avg_ms": 2672,
+    "avg_conf": 0.972,
+    "rule_gen": 74,
+    "rule_raw_valid": 28,
+    "rule_valid": 67,
+    "rule_repaired": 3,
+    "rule_anchor_valid": 36,
+    "e2e_intercepted": 75,
+    "e2e_rate": 96.2,
+    "firstline_blocked": 55,
+    "firstline_detail": {
+      "sqli": 8,
+      "xss": 8,
+      "cmdi": 9,
+      "traversal": 10,
+      "ssrf": 10,
+      "ssti": 6,
+      "xxe": 2,
+      "deser": 2
+    },
+    "ai_candidates": 23,
+    "ai_detected": 23,
+    "ai_intercepted": 20,
+    "ai_contribution": 87.0,
+    "overall_intercepted": 75,
+    "overall_rate": 96.2,
+    "safeline_only_rate": 70.5,
+    "ai_increment_pp": 25.6,
+    "rule_sources": {
+      "model": 31,
+      "anchor": 36,
+      "literal": 5,
+      "syntax": 3
+    },
+    "screened": 63,
+    "per_cat": {
+      "sqli": {
+        "total": 10,
+        "detected": 10
+      },
+      "xss": {
+        "total": 10,
+        "detected": 10
+      },
+      "cmdi": {
+        "total": 10,
+        "detected": 10
+      },
+      "traversal": {
+        "total": 10,
+        "detected": 10
+      },
+      "ssrf": {
+        "total": 6,
+        "detected": 6
+      },
+      "ssti": {
+        "total": 6,
+        "detected": 6
+      },
+      "xxe": {
+        "total": 6,
+        "detected": 6
+      },
+      "deser": {
+        "total": 2,
+        "detected": 2
+      },
+      "nosql": {
+        "total": 7,
+        "detected": 7
+      },
+      "crlf": {
+        "total": 2,
+        "detected": 2
+      },
+      "ldap": {
+        "total": 3,
+        "detected": 3
+      },
+      "jndi": {
+        "total": 6,
+        "detected": 6
+      }
+    },
+    "missed": []
+  },
+  "injection": {
+    "total": 0,
+    "detected": 0,
+    "asr": 0,
+    "guard_caught": 0,
+    "errors": 0,
+    "guard_enabled": true
+  },
+  "normal": {
+    "total": 32,
+    "false_pos": 0,
+    "rate": 0.0,
+    "screened": 1,
+    "screened_fp": 0,
+    "guard_hit": 0,
+    "guard_fp": 0,
+    "fp": []
+  }
+}

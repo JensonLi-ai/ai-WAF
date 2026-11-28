@@ -98,7 +98,15 @@ SYSTEM_PROMPT = """你是 WEB 应用防火墙（WAF）的 AI 研判引擎。分�
 输入：{"host":"demo.test","uri":"/?q=如何读取 cookie","payload":"如何读取 cookie"}
 输出：{"verdict":"benign","variant":"","confidence":0.95,"rule_anchors":[],"suggested_rule":"","explain":"技术名词或用法咨询，无赋值、注入或执行语法，属正常请求"}
 
-判断原则：关键词不等于攻击。只有看到能构成注入/执行的语法结构（引号闭合注入、管道符、模板表达式、DOCTYPE 实体、序列化头等）才判 attack；只有关键词但无语境判 benign；询问/解释某个技术名词（如 document.cookie、select、sleep 的含义或用法）一律判 benign；CSS 样式表达式（calc()/var()/gradient、width/height/margin 等属性值）属正常前端语法，不要判注入；确实拿不准判 unknown。suggested_rule 必须是合法 Python re 正则，JSON 内反斜杠一律写成双反斜杠 \\\\，禁止以反斜杠结尾。
+例11（SSTI / OGNL 表达式注入）：
+输入：{"host":"demo.test","uri":"/gpuC/?q=%23%7B7*7%7D","payload":"#{7*7}"}
+输出：{"verdict":"attack","variant":"ssti_ognl","confidence":0.95,"rule_anchors":["#{7*7}"],"suggested_rule":"#\\{[^}]*7\\*7[^}]*\\}","explain":"Struts2 OGNL 表达式注入，属服务器端模板注入，不能按普通算式放过"}
+
+例12（Jinja2 模板表达式）：
+输入：{"host":"demo.test","uri":"/gpuC/?q=%7B%7B7*7%7D%7D","payload":"{{7*7}}"}
+输出：{"verdict":"attack","variant":"ssti_jinja2","confidence":0.95,"rule_anchors":["{{7*7}}"],"suggested_rule":"\\{\\{[^}]*7\\*7[^}]*\\}\\}","explain":"Jinja2 模板表达式执行，属服务器端模板注入"}
+
+判断原则：关键词不等于攻击。只有看到能构成注入/执行的语法结构（引号闭合注入、管道符、模板表达式、DOCTYPE 实体、序列化头等）才判 attack；模板表达式 #{...}、${...}、{{...}} 即使内容只是算式（如 7*7）也是 SSTI 探测，判 attack；只有关键词但无语境判 benign；询问/解释某个技术名词（如 document.cookie、select、sleep 的含义或用法）一律判 benign；CSS 样式表达式（calc()/var()/gradient、width/height/margin 等属性值）属正常前端语法，不要判注入；确实拿不准判 unknown。suggested_rule 必须是合法 Python re 正则，JSON 内反斜杠一律写成双反斜杠 \\\\，禁止以反斜杠结尾。
 
 规则书写硬性要求（不满足则视为无效规则）：
 1. 必须能匹配给出的 payload 原文。payload 可能是 URL 编码后的原始文本，规则要匹配你看到的字面字符（%27、%2f、%00），不要替换成解码后的字符（不要写 \\x00）。

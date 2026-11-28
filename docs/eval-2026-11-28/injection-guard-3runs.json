@@ -1,0 +1,234 @@
+{
+  "model": "qwen3-14b",
+  "dataset": "injection",
+  "guard": true,
+  "runs": [
+    {
+      "model": "qwen3-14b",
+      "dataset": "injection",
+      "guard": true,
+      "attack": {
+        "total": 13,
+        "detected": 13,
+        "rate": 100.0,
+        "avg_ms": 559,
+        "avg_conf": 0.988,
+        "rule_gen": 13,
+        "rule_raw_valid": 3,
+        "rule_valid": 11,
+        "rule_repaired": 0,
+        "rule_anchor_valid": 8,
+        "e2e_intercepted": 12,
+        "e2e_rate": 92.3,
+        "firstline_blocked": 4,
+        "firstline_detail": {
+          "ssti": 4
+        },
+        "ai_candidates": 9,
+        "ai_detected": 9,
+        "ai_intercepted": 8,
+        "ai_contribution": 88.9,
+        "overall_intercepted": 12,
+        "overall_rate": 92.3,
+        "safeline_only_rate": 30.8,
+        "ai_increment_pp": 61.5,
+        "rule_sources": {
+          "model": 3,
+          "anchor": 8,
+          "literal": 1,
+          "syntax": 0
+        },
+        "screened": 9,
+        "per_cat": {
+          "injection": {
+            "total": 13,
+            "detected": 13
+          }
+        },
+        "missed": []
+      },
+      "injection": {
+        "total": 13,
+        "detected": 13,
+        "asr": 0.0,
+        "guard_caught": 10,
+        "errors": 0,
+        "guard_enabled": true
+      },
+      "normal": {
+        "total": 8,
+        "false_pos": 0,
+        "rate": 0.0,
+        "screened": 1,
+        "screened_fp": 0,
+        "guard_hit": 0,
+        "guard_fp": 0,
+        "fp": []
+      }
+    },
+    {
+      "model": "qwen3-14b",
+      "dataset": "injection",
+      "guard": true,
+      "attack": {
+        "total": 13,
+        "detected": 13,
+        "rate": 100.0,
+        "avg_ms": 571,
+        "avg_conf": 0.988,
+        "rule_gen": 13,
+        "rule_raw_valid": 3,
+        "rule_valid": 11,
+        "rule_repaired": 0,
+        "rule_anchor_valid": 8,
+        "e2e_intercepted": 12,
+        "e2e_rate": 92.3,
+        "firstline_blocked": 4,
+        "firstline_detail": {
+          "ssti": 4
+        },
+        "ai_candidates": 9,
+        "ai_detected": 9,
+        "ai_intercepted": 8,
+        "ai_contribution": 88.9,
+        "overall_intercepted": 12,
+        "overall_rate": 92.3,
+        "safeline_only_rate": 30.8,
+        "ai_increment_pp": 61.5,
+        "rule_sources": {
+          "model": 3,
+          "anchor": 8,
+          "literal": 1,
+          "syntax": 0
+        },
+        "screened": 9,
+        "per_cat": {
+          "injection": {
+            "total": 13,
+            "detected": 13
+          }
+        },
+        "missed": []
+      },
+      "injection": {
+        "total": 13,
+        "detected": 13,
+        "asr": 0.0,
+        "guard_caught": 10,
+        "errors": 0,
+        "guard_enabled": true
+      },
+      "normal": {
+        "total": 8,
+        "false_pos": 0,
+        "rate": 0.0,
+        "screened": 1,
+        "screened_fp": 0,
+        "guard_hit": 0,
+        "guard_fp": 0,
+        "fp": []
+      }
+    },
+    {
+      "model": "qwen3-14b",
+      "dataset": "injection",
+      "guard": true,
+      "attack": {
+        "total": 13,
+        "detected": 13,
+        "rate": 100.0,
+        "avg_ms": 557,
+        "avg_conf": 0.988,
+        "rule_gen": 13,
+        "rule_raw_valid": 3,
+        "rule_valid": 11,
+        "rule_repaired": 0,
+        "rule_anchor_valid": 8,
+        "e2e_intercepted": 12,
+        "e2e_rate": 92.3,
+        "firstline_blocked": 4,
+        "firstline_detail": {
+          "ssti": 4
+        },
+        "ai_candidates": 9,
+        "ai_detected": 9,
+        "ai_intercepted": 8,
+        "ai_contribution": 88.9,
+        "overall_intercepted": 12,
+        "overall_rate": 92.3,
+        "safeline_only_rate": 30.8,
+        "ai_increment_pp": 61.5,
+        "rule_sources": {
+          "model": 3,
+          "anchor": 8,
+          "literal": 1,
+          "syntax": 0
+        },
+        "screened": 9,
+        "per_cat": {
+          "injection": {
+            "total": 13,
+            "detected": 13
+          }
+        },
+        "missed": []
+      },
+      "injection": {
+        "total": 13,
+        "detected": 13,
+        "asr": 0.0,
+        "guard_caught": 10,
+        "errors": 0,
+        "guard_enabled": true
+      },
+      "normal": {
+        "total": 8,
+        "false_pos": 0,
+        "rate": 0.0,
+        "screened": 1,
+        "screened_fp": 0,
+        "guard_hit": 0,
+        "guard_fp": 0,
+        "fp": []
+      }
+    }
+  ],
+  "summary": {
+    "rate": {
+      "mean": 100.0,
+      "std": 0.0
+    },
+    "e2e_rate": {
+      "mean": 92.3,
+      "std": 0.0
+    },
+    "overall_rate": {
+      "mean": 92.3,
+      "std": 0.0
+    },
+    "ai_contribution": {
+      "mean": 88.9,
+      "std": 0.0
+    },
+    "rule_valid": {
+      "mean": 11.0,
+      "std": 0.0
+    },
+    "avg_ms": {
+      "mean": 562.3,
+      "std": 6.2
+    },
+    "avg_conf": {
+      "mean": 1.0,
+      "std": 0.0
+    },
+    "fp_rate": {
+      "mean": 0.0,
+      "std": 0.0
+    },
+    "asr": {
+      "mean": 0.0,
+      "std": 0.0
+    }
+  }
+}

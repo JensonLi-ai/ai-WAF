@@ -26,9 +26,9 @@ if errorlevel 1 (
 )
 
 echo [2/7] Æô¶¯ Docker ÓëÀ×³ØÈİÆ÷ ...
-wsl -d %WSL_DIST% -u root -e bash -c "service docker start >/dev/null 2>&1; cd /data/safeline && docker compose up -d"
+wsl -d %WSL_DIST% -u root -e bash -c "service docker start >/dev/null 2>&1; for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done; docker info >/dev/null 2>&1 || exit 3; cd /data/safeline && docker compose up -d"
 if errorlevel 1 (
-    echo   [´íÎó] À×³ØÈİÆ÷Æô¶¯Ê§°Ü
+    echo   [´íÎó] Docker Î´¾ÍĞ÷»òÀ×³ØÈİÆ÷Æô¶¯Ê§°Ü
     goto :failed
 )
 

@@ -63,6 +63,9 @@ MISS_SUSPECT_RE = re.compile(
     # SQL 注入
     r"'\s*or\s+'|union\s+(all\s+)?select|\bor\s+\d+\s*=\s*\d+|"
     r"information_schema|\b(sleep|benchmark|pg_sleep)\s*\(|"
+    r"[;|]\s*(?:sleep|ping)(?:\s|\+)+\d{1,3}\b|"
+    r"\b(?:and|or)\s+sleep(?:\s|\+)+\d|"
+    r"\bwaitfor\s+delay\b|\bxp_cmdshell\b|"
     # 命令注入
     r"\|\s*(id|whoami|cat|ls|sh|bash|net|ping|wget|curl|nc|nslookup)\b|"
     r"&&\s*\w+|;\s*(id|whoami|cat|ls)\b|"
@@ -426,10 +429,11 @@ def _anchor_rule(payload):
     m = re.search(r'[;|]\s*(sleep|benchmark|pg_sleep)\s*\(', p, re.I)
     if m:
         return r'(?i)[;|]\s*' + m.group(1).lower() + r'\s*\('
-    # 命令注入：分号 + sleep/ping + 秒数（如 1;sleep 10）
-    m = re.search(r'[;|]\s*(sleep|ping)\s+\d{1,3}\b', p, re.I)
+    # 命令注入：分号 + sleep/ping + 秒数（如 1;sleep 10 / 1;sleep+10）
+    m = re.search(r'[;|]\s*(sleep|ping)(?:\s|\+)+\d{1,3}\b', p, re.I)
     if m:
-        return r'(?i)[;|]\s*' + m.group(1).lower() + r'\s+\d{1,3}\b'
+        return (r'(?i)[;|]\s*' + m.group(1).lower()
+                + r'(?:\s|\+)+\d{1,3}\b')
     # SQL：and/or + 延时函数（时间盲注）
     m = re.search(r'\b(and|or)\s+(sleep|benchmark|pg_sleep)\s*\(', p, re.I)
     if m:
@@ -516,6 +520,7 @@ class Engine(threading.Thread):
         self._miss_seen = set()
         self._miss_backlog = deque()
         self._m_lock = threading.Lock()
+        self._rule_lock = threading.Lock()
         self._latencies = deque(maxlen=500)
         self._started_at = time.time()
         self.metrics = {
@@ -690,26 +695,29 @@ class Engine(threading.Thread):
             return
         prefix = _uri_prefix(row.get("uri"))
         scope = "%s|%s" % (host or "", prefix)
-        if db.rule_regex_exists(regex, host=host or "", prefix=prefix):
-            log("skip rule: regex already covered in scope %s: %r" %
-                (scope, regex[:60]))
-            return
-        name = "AI-%s-%s" % (
-            _slug(a.get("variant")),
-            hashlib.md5((regex + "|" + scope).encode()).hexdigest()[:8])
-        conditions = self.safeline.build_conditions(
-            uri_regex=_scoped_uri_regex(prefix, regex),
-            host=host, site_id=site_id)
-        policy_id = self._create_policy_with_site_op_fallback(name, conditions)
-        if policy_id is None:
-            return
-        db.add_rule(
-            name=name, regex=regex, site_id=site_id or host, host=host,
-            uri_prefix=prefix,
-            observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
-            safeline_policy_id=policy_id, confidence=a["confidence"],
-            source="ai-closed-loop", regex_source=regex_source,
-            sample=sample)
+        # 并发研判时两个线程可能拿到同一 payload，必须原子化「查重 -> 下发 -> 入库」，
+        # 否则会为同一正则创建多条重复策略。
+        with self._rule_lock:
+            if db.rule_regex_exists(regex, host=host or "", prefix=prefix):
+                log("skip rule: regex already covered in scope %s: %r" %
+                    (scope, regex[:60]))
+                return
+            name = "AI-%s-%s" % (
+                _slug(a.get("variant")),
+                hashlib.md5((regex + "|" + scope).encode()).hexdigest()[:8])
+            conditions = self.safeline.build_conditions(
+                uri_regex=_scoped_uri_regex(prefix, regex),
+                host=host, site_id=site_id)
+            policy_id = self._create_policy_with_site_op_fallback(name, conditions)
+            if policy_id is None:
+                return
+            db.add_rule(
+                name=name, regex=regex, site_id=site_id or host, host=host,
+                uri_prefix=prefix,
+                observed_until=_iso(_now() + timedelta(hours=config.OBSERVE_TTL_HOURS)),
+                safeline_policy_id=policy_id, confidence=a["confidence"],
+                source="ai-closed-loop", regex_source=regex_source,
+                sample=sample)
         self._metric("rules_created")
         log("rule created: %s (policy_id=%s) prefix=%s source=%s conf=%.2f" %
             (name, policy_id, prefix, regex_source, a["confidence"]))

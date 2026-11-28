@@ -5,14 +5,17 @@
 import os
 import re
 import tempfile
+import threading
+import time
 import unittest
 
 from aiwaf import config, db
 from aiwaf import engine as engine_mod
 from aiwaf.benchmark import (INJECTION_NORMAL, INJECTION_SAMPLES,
                              _judge_rule_quality)
-from aiwaf.engine import (Engine, _anchor_rule, _literal_rule, _llm_anchor_rule,
-                          _regex_risky, _regex_specific_enough, _resolve_rule,
+from aiwaf.engine import (MISS_SUSPECT_RE, Engine, _anchor_rule, _literal_rule,
+                          _llm_anchor_rule, _regex_risky,
+                          _regex_specific_enough, _resolve_rule,
                           _resolve_rule_ex, _scope_inline_flags,
                           _scoped_uri_regex)
 from aiwaf.llm_client import LlmClient, _PROMPT_INJECT_RE
@@ -67,6 +70,12 @@ class TestRuleBuilding(unittest.TestCase):
         self.assertIsNotNone(rule)
         self.assertTrue(re.search(rule, "1;sleep(10)"))
         self.assertIsNone(_anchor_rule("hello;world"))
+
+    def test_plus_encoded_sleep_gets_rule(self):
+        rule = _anchor_rule("1;sleep+10")
+        self.assertIsNotNone(rule)
+        self.assertTrue(re.search(rule, "1;sleep+10"))
+        self.assertTrue(re.search(rule, "1;sleep 10"))
 
     def test_sql_time_based_anchor(self):
         rule = _anchor_rule("1 AND sleep(5)")
@@ -249,8 +258,44 @@ class TestRuleNaming(unittest.TestCase):
         self.assertTrue(safeline.conditions[0].startswith("^/a"))
         self.assertTrue(safeline.conditions[1].startswith("^/b"))
 
+    def test_concurrent_same_payload_creates_one_rule(self):
+        safeline = FakeSafeline()
+        orig_create = safeline.create_policy
+
+        def slow_create(*args, **kwargs):
+            time.sleep(0.1)  # 放大「查重 -> 下发」之间的竞态窗口
+            return orig_create(*args, **kwargs)
+
+        safeline.create_policy = slow_create
+        eng = Engine(safeline, FakeLlm())
+        a = {"verdict": "attack", "confidence": 0.99, "variant": "cmdi",
+             "rule_anchors": [], "suggested_rule": r";\s*whoami",
+             "explain": "fake", "model": "fake"}
+        row = {"host": "demo.test", "uri": "/gpuE?q=;whoami",
+               "payload": ";whoami"}
+        threads = [threading.Thread(target=eng._maybe_create_rule,
+                                    args=(dict(row), dict(a))) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(safeline.names), 1)
+        self.assertEqual(len(db.all_rules()), 1)
+
 
 class TestMissBatchIsolation(unittest.TestCase):
+    def test_coarse_filter_covers_space_sleep_and_waitfor(self):
+        samples = [
+            "/q=1;sleep 10",
+            "/q=1;sleep+10",
+            "/q=1;ping 127.0.0.1",
+            "1 AND sleep 5",
+            "1;WAITFOR DELAY '0:0:5'--",
+            "1;EXEC xp_cmdshell 'whoami'",
+        ]
+        for payload in samples:
+            self.assertIsNotNone(MISS_SUSPECT_RE.search(payload), payload)
+
     def test_one_bad_candidate_does_not_abort_batch(self):
         eng = Engine(None, FakeLlm())
         eng._read_miss_log = lambda: ["{}", "{}"]
