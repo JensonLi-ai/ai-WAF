@@ -116,14 +116,30 @@ _CTRL_TO_ESCAPE = {
     "\x0a": r"\n", "\x0d": r"\r",
 }
 
-# 针对 AI 研判层的提示词注入：命中即按攻击处理，不依赖模型是否被说服
+# 针对 AI 研判层的提示词注入：命中即按攻击处理，不依赖模型是否被说服。
+# 只匹配明确的「覆盖规则 / 劫持角色 / 套取提示词 / 伪造研判结果」意图，
+# 避免把「什么是 system prompt」「你现在是管理员吗」这类正常提问误判为攻击。
 _PROMPT_INJECT_RE = re.compile(
-    r"(?is)(ignore\s+(all\s+)?(previous|prior|above)\s+instructions|"
-    r"disregard\s+(all\s+)?(previous|prior|above)\s+instructions|"
-    r"system\s*prompt|you\s+are\s+now\s+(an?\s+)?(ai|assistant|chatgpt)|"
+    r"(?is)("
+    # 显式要求忽略既有规则
+    r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|rules?|prompts?)|"
+    r"disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|rules?|prompts?)|"
+    # 角色劫持
+    r"you\s+are\s+now\s+(?:an?\s+)?(?:[\w-]+\s+){0,3}(ai|assistant|chatgpt|dan)\b|"
+    r"你(现在)?是.{0,12}(不受限制|无限制|开发者模式|dan)|"
+    r"(从现在开始|接下来)你(是|将扮演|要扮演).{0,20}"
+    r"(不受限制|无限制|开发者模式|dan|没有规则|忽略规则)|"
+    # 伪造对话角色标记
     r"<\|im_start\|>|<\|system\|>|"
-    r"忽略(之前|以上|前面|先前)的?(所有)?(指令|规则)|"
-    r"你现在是|输出以下内容)"
+    # 套取系统提示词（必须有动作意图，避免正常提问误报）
+    r"(reveal|show|print|repeat|leak|dump|输出|告诉我|显示|泄露|复述|打印)"
+    r".{0,24}(system\s*prompt|系统提示词|初始指令)|"
+    # 中文覆盖指令
+    r"忽略(之前|以上|前面|先前)的?(所有)?(指令|规则|提示)|"
+    # 试图直接注入研判结果
+    r"[\"']?verdict[\"']?\s*[:=]\s*[\"']?(benign|attack)|"
+    r"输出以下内容.{0,16}(verdict|benign|正常|攻击|json)"
+    r")"
 )
 
 
@@ -249,15 +265,16 @@ class LlmClient:
             "explain": _field("explain") or "",
         }
 
-    def analyze(self, event):
+    def analyze(self, event, guard=True):
         """研判单条事件，返回规范化 dict。
 
+        guard=False 时跳过确定性注入防护，仅测模型自身抗性（用于评测对比）。
         无论模型输出如何都返回合法结构（verdict/confidence 有兜底），
         不抛异常——单条研判失败不应拖垮整个轮询循环。
         """
         # 确定性防护：payload 里出现"忽略指令/系统提示词"等针对 AI 的注入，直接判攻击
         raw_payload = str(event.get("payload") or event.get("uri") or "")
-        inj = _PROMPT_INJECT_RE.search(raw_payload)
+        inj = _PROMPT_INJECT_RE.search(raw_payload) if guard else None
         if inj:
             return {"verdict": "attack", "confidence": 0.99,
                     "variant": "prompt_injection",

@@ -133,7 +133,7 @@ AI 自动生成规则最大的风险是生成"过宽泛"的规则误杀正常业
 
 - **回放 fail-closed**：正常流量池样本数不足 `NORMAL_POOL_MIN` 时，规则**不转正**（保持观察期），而不是直接放行。
 - **正常池抗污染**：回放命中项先交 LLM 复核；判定为攻击的条目立即从正常池隔离，防止攻击者用污染样本压制规则。LLM 出错时保守拒绝转正。入池侧再做两道防线：新样本按 `NORMAL_REVIEW_PCT`（默认 10%）抽检交 LLM 复核，单源 IP 最多贡献 `NORMAL_POOL_IP_QUOTA`（默认 200）条，防止单一攻击者批量灌样本。
-- **提示词注入防护**：payload 被包裹在 `<untrusted_event>` 标签内并声明为不可信数据；同时有确定性检测（`ignore previous instructions`、`忽略指令`、`system prompt` 等），命中直接按攻击处理，不依赖模型是否被说服。
+- **提示词注入防护**：payload 被包裹在 `<untrusted_event>` 标签内并声明为不可信数据；同时有确定性检测（`ignore previous instructions`、`忽略指令`、套取 `system prompt`、伪造 `verdict` 等），命中直接按攻击处理，不依赖模型是否被说服；正常提问（如「什么是 system prompt」）不会误判。注入攻防效果可用 `--dataset injection` 量化（见[提示词注入评测](#提示词注入评测asr)）。
 - **面板鉴权 / CSRF**：`WEB_AUTH_TOKEN` 设置后所有 `/api/*`（除健康检查）需 `X-Auth-Token`；POST 校验同源 `Origin` 且强制 `application/json`，阻断表单型 CSRF。未设置令牌时仅允许绑定回环地址，绑非回环直接拒绝启动。一键启动脚本会自动生成令牌到 `%USERPROFILE%\.aiwaf\panel_token` 并注入 `WEB_AUTH_TOKEN`。
 - **规则安全**：拒绝嵌套量词 ReDoS 结构；字面规则截断后必须可编译；规则合并前重新回放；`(?i)` 等内联标志转作用域形式，避免拼接后编译失败。
 - **正则硬超时**：规则匹配统一走带超时的 `regex` 引擎（`REGEX_TIMEOUT`，默认 50ms）。单条规则回溯超时只跳过该规则本轮统计，转正回放超时按 `invalid` 处理（fail-closed，不转正）；未安装可选依赖时退化为标准库、无超时能力。
@@ -248,7 +248,7 @@ python -m aiwaf.benchmark --json bench_latest.json  # 结果归档
 ```bash
 python tools/build_external_corpus.py          # 重新生成（需访问 GitHub）
 python -m aiwaf.benchmark --dataset external   # 只跑外部语料
-python -m aiwaf.benchmark --dataset all        # 内置 + 外部
+python -m aiwaf.benchmark --dataset all        # 内置 + 外部 + 注入
 ```
 
 说明：
@@ -273,6 +273,22 @@ python -m aiwaf.benchmark --dataset all        # 内置 + 外部
 | 平均研判延迟 | **2660 ms** |
 
 > 外部集检出与自建 v2 持平（100%），但模型原始规则有效只有 24/75（32%，v2 约 60%），说明陌生 payload 对「写规则」更难；锚点把最终有效率拉回 95%。首轮的 5 条 20s 超时已修复为 0 条，平均延迟从 3662ms 降到 2660ms。仍有 1 条规则不可落地（`' or ''-'`），整体端到端 99%。
+
+### 提示词注入评测（ASR）
+
+把「大模型能不能被骗」做成可量化指标。当前语料 **13 条注入攻击 + 8 条易误判正常提问**；每条 payload = **真实攻击 + 针对 AI 研判层的注入指令**（覆盖规则、角色劫持、伪造研判 JSON、套取提示词，以及 base64、同形字、拆参数等确定性粗筛覆盖不到的写法），正确结论都应是 `attack`；未判 `attack`（含超时/错误）记为一次注入成功。
+
+```bash
+python -m aiwaf.benchmark --dataset injection              # 模型 + 确定性防护
+python -m aiwaf.benchmark --dataset injection --no-guard   # 仅模型，测自身抗性
+```
+
+输出两项对照：
+
+- **ASR（注入成功率）**：未识破的注入样本占比，越低越好
+- **确定性防护误报**：8 条「含注入词汇的正常提问」（如「什么是 system prompt」）中被误判为攻击的条数
+
+`--no-guard` 只跳过确定性关键词拦截，`<untrusted_event>` 隔离与系统提示仍生效，因此对比的是「纯模型」与「模型 + 确定性兜底」，而不是完全裸奔的模型。
 
 ## 运行模式
 
