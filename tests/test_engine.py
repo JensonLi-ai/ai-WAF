@@ -13,6 +13,7 @@ from aiwaf import config, db
 from aiwaf import engine as engine_mod
 from aiwaf.benchmark import (INJECTION_NORMAL, INJECTION_SAMPLES,
                              _judge_rule_quality)
+from aiwaf.family import FAMILY_SIGNATURES, _matches, family_of
 from aiwaf.engine import (MISS_SUSPECT_RE, Engine, _anchor_rule, _literal_rule,
                           _llm_anchor_rule, _regex_risky,
                           _regex_specific_enough, _resolve_rule,
@@ -472,6 +473,31 @@ class TestRegexTimeoutReplay(unittest.TestCase):
         status, _ = eng._replay_normal(r"(a+)+$")
         self.assertEqual(status, "invalid")  # fail-closed：不转正
         self.assertEqual(eng.metrics["regex_timeouts"], 1)
+
+
+class TestAttackFamily(unittest.TestCase):
+    def test_time_based_variants_share_family(self):
+        for payload in ("1;sleep(10)", "1;sleep+10", "1 AND sleep(5)",
+                        "1;WAITFOR DELAY '0:0:5'--"):
+            self.assertEqual(family_of("sqli", payload), "time_based", payload)
+
+    def test_family_rule_generalizes_to_unseen_variant(self):
+        sig = FAMILY_SIGNATURES["time_based"]
+        self.assertTrue(_matches(sig, "1;sleep(3)"))
+        self.assertTrue(_matches(sig, "1|sleep 9"))
+        self.assertFalse(_matches(sig, "sleep 8 hours"))
+
+    def test_xss_family_does_not_match_normal_fields(self):
+        sig = FAMILY_SIGNATURES["xss"]
+        for payload in ("content=we have 2 apples and 1>0 is true",
+                        "contact=admin@example.com"):
+            self.assertFalse(_matches(sig, payload), payload)
+        self.assertTrue(_matches(sig, "<script>alert(1)</script>"))
+
+    def test_overlong_traversal_is_clustered_from_raw_form(self):
+        self.assertEqual(
+            family_of("traversal", "..%c0%af..%c0%afetc/passwd"),
+            "traversal")
 
 
 class TestPromptInjection(unittest.TestCase):
