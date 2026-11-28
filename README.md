@@ -1,4 +1,4 @@
-# AI-WAF 智能 Web 应用防火墙
+# AI-WAF：SafeLine 的旁路 AI 补漏与规则自愈层
 
 [![CI](https://github.com/JensonLi-ai/ai-WAF/actions/workflows/ci.yml/badge.svg)](https://github.com/JensonLi-ai/ai-WAF/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
@@ -9,16 +9,17 @@
 
 > 🔒 **数据不出网**：流量从采集、研判到拦截，全程留在你自己的服务器，不交给任何云端。
 >
-> 💰 **中小企业也用得起**：开源组件 + 本地模型搭建，一次硬件投入，告别商业 WAF 每年几万块的订阅费。
+> **不替代 WAF，只补它漏掉的**：雷池先拦已知攻击；漏网的变形请求由本地大模型异步研判，自动生成规则、观察、回放、转正。
 
-一个把「本地大模型」接入开源 WAF 的**闭环防护系统**——不仅拦截已知攻击，还能**自动发现并补上规则没见过的变形攻击**。
+AI-WAF 是一个**旁路式 AI 补漏与规则自愈层**——第一次漏过的攻击它拦不住，但会立刻补上规则，让同样的手法第二次进不来。
 
 > ⚠️ 本项目仅供合法的授权安全测试与学习研究使用。请勿用于任何未授权的攻击行为。
 
 ### English Summary
 
-AI-WAF is a closed-loop Web Application Firewall that puts a **local LLM** (Qwen3-14B) behind SafeLine:
+AI-WAF is a **bypass AI gap-filling and rule self-healing layer** for SafeLine:
 
+- **Not a WAF replacement** — SafeLine stays the first line; AI-WAF only fills the gaps it misses, asynchronously.
 - **On-prem by design** — traffic and payloads never leave your server.
 - **Two-stage defense** — SafeLine blocks known signatures in milliseconds; the LLM reviews only bypass traffic asynchronously.
 - **Self-healing rules** — the model extracts verbatim attack anchors from payloads, the engine assembles and validates regexes, rules enter an observation period, are replayed against normal traffic, then promoted automatically.
@@ -104,7 +105,7 @@ sequenceDiagram
     W-->>A: 403 拦截
 ```
 
-关键点：**它不怕第一枪**。第一波攻击可能漏过去，但 AI 会立刻补上规则，攻击者只能打一发，后续同样的手法全部被封死。
+关键点：**它不抢第一枪，但会补上第二枪**。第一波攻击可能漏过——这正是旁路补漏层的前提；AI 随后生成规则，攻击者只能打一发，后续同样的手法全部被封死。
 
 ## 检测能力
 
@@ -188,6 +189,7 @@ tests/test_engine.py  # 核心安全逻辑单元测试
 - 进行中：真实流量压测、大规模 CVE 语料的基座模型领域微调、与商业 WAF 的横向检出率 / 误报率对比
 
 已知限制：
+- 定位为旁路补漏：第一线漏掉的**首次**请求仍会到达后端，本系统保证的是后续同类手法被拦，不能替代实时 WAF。
 - 存储为单文件 SQLite，引擎 / 采集器 / Web 面板多进程并发读写依赖 busy_timeout 串行化，适合原型与中小流量；高并发生产需换 Postgres。
 - 正常流量回放池靠粗筛过滤疑似攻击，并已加入池抽检与单 IP 配额；仍存在「粗筛与 LLM 均漏判」的变形攻击污染正常池的极低概率可能，属已知边界。
 
