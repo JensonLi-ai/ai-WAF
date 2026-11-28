@@ -59,36 +59,45 @@ MISS_SUSPECT_RE = re.compile(
     r"<svg|<script|<img[^>]*(onerror|onload)|"
     r"\bon(load|error|click|mouseover|mouseout|focus|blur|change|submit|"
     r"keyup|keydown|scroll|input)\s*=|"
-    r"javascript\s*:|document\.cookie|\b(alert|prompt|confirm)\s*\(|"
-    # SQL 注入
-    r"'\s*or\s+'|union\s+(all\s+)?select|\bor\s+\d+\s*=\s*\d+|"
+    r"javascript\s*:|data:text/html|document\.cookie|\b(alert|prompt|confirm)\s*\(|"
+    # SQL 注入（含注释绕过、堆叠语句、二次编码）
+    r"['\"]\s*or\s+['\"]|union\s+(all\s+)?select|\bor\s+\d+\s*=\s*\d+|"
     r"information_schema|\b(sleep|benchmark|pg_sleep)\s*\(|"
     r"[;|]\s*(?:sleep|ping)(?:\s|\+)+\d{1,3}\b|"
     r"\b(?:and|or)\s+sleep(?:\s|\+)+\d|"
-    r"\bwaitfor\s+delay\b|\bxp_cmdshell\b|"
-    # 命令注入
+    r"\bwaitfor\s+delay\b|\bxp_(?:cmdshell|dirtree|fileexist|subdirs)\b|"
+    r"['\"]\s*(?:--|#)|/\*.*?\*/\s*(?:union|select)|union\s*(?:/\*.*?\*/\s*)+select|"
+    r";\s*(?:drop|truncate|alter|delete|insert|update)\b|"
+    # 命令注入（含反连、换行、URL 编码换行）
     r"\|\s*(id|whoami|cat|ls|sh|bash|net|ping|wget|curl|nc|nslookup)\b|"
     r"&&\s*\w+|;\s*(id|whoami|cat|ls)\b|"
+    r"/dev/tcp/|bash\s+-i\b|nc\s+-[el]\b|"
+    r"%0[ad]\s*(?:id|whoami|cat|ls|sh|bash|wget|curl|nc)\b|"
+    r"(?:\r|\n)\s*(?:id|whoami|cat|ls|sh|bash)\b|"
     r"`[^`]+`|\$\([^)]*\)|\b(eval|exec|system)\s*\(|"
-    # 路径穿越
-    r"\.\./|\.\.\\|%2e%2e|"
-    # SSRF
+    # 路径穿越（含双重编码、overlong、分号、空字节）
+    r"\.\./|\.\.\\|%2e%2e|\.\.(?:%2f|%252f|%5c|%255c)|%252e%252e|"
+    r"%c0%af|%c1%9c|\.\.;/|%00|"
+    # SSRF / 内网探测（含十进制、十六进制、IPv6、本地域名）
     r"\b(file|gopher|dict|ldap)://|127\.0\.0\.1|169\.254\.169\.254|"
-    # 模板注入 (EL / SpEL / Thymeleaf / 通用 SSTI)
-    r"\$\{[^}]+\}|\{\{[^{}]*\}\}|\#\{[^}]+\}|@\{[^}]+\}|"
+    r"\b(?:localhost|localtest\.me|0\.0\.0\.0)\b|127\.\d+\.\d+\.\d+|"
+    r"http://\d{8,10}\b|http://0x[0-9a-f]{6,}|2130706433|\[::1\]|::1|"
+    # 模板注入 (EL / SpEL / Thymeleaf / Velocity / 通用 SSTI)
+    r"\$\{[^}]+\}|\{\{[^{}]*\}\}|\#\{[^}]+\}|@\{[^}]+\}|#set\s*\(|"
     r"__class__|__globals__|__subclasses__|jndi:|"
     # 针对 AI 研判层的提示词注入
     r"ignore\s+(all\s+)?(previous|prior)\s+instructions|"
     r"忽略.{0,8}(指令|规则)|system\s*prompt|<\|im_start\|>|"
-    # XML / XXE / Office 公式注入
-    r"<!ENTITY|<!DOCTYPE|<%[=#]?|O:\d+:|"
-    # NoSQL 注入
+    # XML / XXE / Office 公式注入 / Java 反序列化头
+    r"<!ENTITY|<!DOCTYPE|<%[=#]?|O:\d+:|aced00|rO0AB|"
+    # NoSQL 注入（括号与 JSON 两种写法）
     r"\[\$(?:ne|gt|gte|lt|lte|regex|where|exists|in|nin)\]|"
+    r"\$(?:where|gt|gte|lt|lte|ne|regex|or|and|exists|in|nin)\s*[\"']?\s*:|"
     # CRLF 头注入（编码或裸回车换行后接敏感头）
     r"%0d%0a(?:set-cookie|location|content-length)|"
     r"\r\n(?:set-cookie|location|content-length)|"
-    # LDAP 注入
-    r"\*\)\(\w+=\*|\)\s*\(\s*\|\s*\("
+    # LDAP 注入（原文与编码）
+    r"\*\)\(\w+=\*|\)\s*\(\s*\|\s*\(|\*\(\s*\||%2a%28%7c|%2a%7c|\*\|"
 )
 
 
@@ -823,9 +832,10 @@ class Engine(threading.Thread):
             return None
         try:
             uri = unquote(raw_uri)
+            probe = unquote(uri)  # 二次编码（%252e -> %2e -> .）也要能粗筛到
         except Exception:
-            uri = raw_uri
-        if MISS_SUSPECT_RE.search(uri):
+            uri = probe = raw_uri
+        if MISS_SUSPECT_RE.search(uri) or MISS_SUSPECT_RE.search(probe):
             return None  # 疑似攻击，不进正常池
         return {"uri": uri, "host": obj.get("host", ""),
                 "src_ip": obj.get("src_ip", "")}
@@ -886,9 +896,10 @@ class Engine(threading.Thread):
                 continue
             try:
                 uri = unquote(raw_uri)
+                probe = unquote(uri)
             except Exception:
-                uri = raw_uri
-            if not MISS_SUSPECT_RE.search(uri):
+                uri = probe = raw_uri
+            if not (MISS_SUSPECT_RE.search(uri) or MISS_SUSPECT_RE.search(probe)):
                 continue
             host = obj.get("host", "")
             client = obj.get("src_ip", "")
